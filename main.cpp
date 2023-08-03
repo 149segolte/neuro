@@ -1,11 +1,13 @@
 #include <stdint.h>
 
 #include <algorithm>
+#include <array>
 #include <iostream>
+#include <ranges>
+#include <string>
 #include <utility>
 #include <vector>
 
-using namespace std;
 #define MAP_SIZE 32
 #define POP_SIZE 1000
 #define STEPS 300
@@ -16,7 +18,7 @@ using namespace std;
 #define OUTPUT_NEURONS 11
 #define SCALE 10000
 
-typedef pair<uint8_t, uint8_t> Coord;
+typedef std::pair<uint8_t, uint8_t> Coord;
 typedef uint32_t gene;
 
 struct Connection {
@@ -46,65 +48,113 @@ struct Connection {
 };
 
 class NeuralNet {
-	Connection connections[GENOME_SIZE];
-	vector<pair<uint8_t, float>> output_neurons;
+   private:
+	std::array<Connection, GENOME_SIZE> connections;
+	std::vector<std::pair<uint8_t, float>> output_neurons;
 	float current_state[INPUT_NEURONS];
-
-	NeuralNet(gene genome[GENOME_SIZE], float current_state[INPUT_NEURONS]) {
-		for (int i = 0; i < GENOME_SIZE; i++) {
-			connections[i].from_gene(genome[i]);
-			if (connections[i].sink_type == 0) {
-				output_neurons.push_back(
-					make_pair((uint8_t)connections[i].sink, 0));
-			}
-		}
-		for (int i = 0; i < INPUT_NEURONS; i++) {
-			this->current_state[i] = current_state[i];
-		}
-	}
 
 	float compute(uint8_t neuron_id) {
 		float sum = 0;
+		std::vector<int16_t> self_connections;
 		for (auto &c : connections) {
 			if (c.sink_type == 0 && c.sink == neuron_id) {
 				if (c.source_type == 0) {
 					sum += current_state[c.source] * c.weight / SCALE;
 				} else {
-					sum += compute(c.source) * c.weight / SCALE;
+					if (c.source == neuron_id) {
+						self_connections.push_back(c.weight);
+					} else {
+						sum += compute(c.source) * c.weight / SCALE;
+					}
 				}
 			}
+		}
+		for (auto &c : self_connections) {
+			sum = c * sum / SCALE;
 		}
 		return sum;
 	}
 
-	vector<pair<uint8_t, float>> step() {
+   public:
+	NeuralNet(std::array<gene, GENOME_SIZE> genome,
+			  float initial_state[INPUT_NEURONS]) {
+		for (int i = 0; i < GENOME_SIZE; i++) {
+			connections[i].from_gene(genome[i]);
+			if (connections[i].sink_type == 0) {
+				output_neurons.push_back(
+					std::make_pair((uint8_t)connections[i].sink, 0));
+			}
+		}
+		for (int i = 0; i < INPUT_NEURONS; i++) {
+			this->current_state[i] = initial_state[i];
+		}
+	}
+
+	std::vector<std::pair<uint8_t, float>> step() {
 		for (auto &neuron : output_neurons) {
 			uint8_t neuron_id = neuron.first;
-			auto compute = [&](Connection c) {
-				if (c.sink_type == 0 && c.sink == neuron_id) {
-					neuron.second = c.source_type == 0 ? current_state[c.source]
-													   : compute(c.source);
+			auto res = [&](Connection c) {
+				if (neuron.second == 0 & c.sink_type == 0 &&
+					c.sink == neuron_id) {
+					neuron.second = compute(neuron_id);
 				}
 			};
-			ranges::for_each(connections, compute);
+			std::for_each(connections.cbegin(), connections.cend(), res);
 		}
 		return output_neurons;
+	}
+
+	void update_state(float new_state[INPUT_NEURONS]) {
+		for (int i = 0; i < INPUT_NEURONS; i++) {
+			current_state[i] = new_state[i];
+		}
 	}
 };
 
 class Cell {
+   private:
 	Coord loc;
-	gene genome[GENOME_SIZE];
+	std::array<gene, GENOME_SIZE> genome;
+	NeuralNet *brain;
+
+   public:
+	Cell(Coord loc, std::array<gene, GENOME_SIZE> genome,
+		 float state[INPUT_NEURONS]) {
+		this->loc = loc;
+		for (int i = 0; i < GENOME_SIZE; i++) {
+			this->genome[i] = genome[i];
+		}
+		this->brain = new NeuralNet(genome, state);
+	}
+
+	void step(float state[INPUT_NEURONS]) {
+		brain->update_state(state);
+		auto res = brain->step();
+		for (auto &neuron : res) {
+			if (neuron.first == 0) {
+				// move
+			} else if (neuron.first == 1) {
+				// eat
+			} else if (neuron.first == 2) {
+				// attack
+			} else if (neuron.first == 3) {
+				// mate
+			}
+		}
+	}
 };
 
 void print(int map[MAP_SIZE][MAP_SIZE]) {
 	for (int i = 0; i < MAP_SIZE; i++) {
 		for (int j = 0; j < MAP_SIZE; j++) {
-			cout << map[i][j] << " ";
+			std::cout << map[i][j] << " ";
 		}
-		cout << endl;
+		std::cout << std::endl;
 	}
 }
+
+std::array<gene, GENOME_SIZE> genome();
+float state[INPUT_NEURONS] = {0.0f};
 
 int main() {
 	int map[MAP_SIZE][MAP_SIZE];
@@ -117,7 +167,12 @@ int main() {
 		}
 	}
 
-	print(map);
+	std::array<Cell *, POP_SIZE> cells;
+	for (auto i : std::views::iota(1, POP_SIZE)) {
+		int x = rand() % (MAP_SIZE - 2) + 1;
+		int y = rand() % (MAP_SIZE - 2) + 1;
+		cells[i] = new Cell(Coord(x, y), genome(), state);
+	}
 
 	return 0;
 }
