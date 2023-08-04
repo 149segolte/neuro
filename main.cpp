@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <iostream>
 #include <limits>
 #include <random>
@@ -12,44 +13,53 @@
 #include <utility>
 #include <vector>
 
-#define MAP_SIZE 32
-#define POP_SIZE 100
-#define STEPS 300
+#define MAP_SIZE 36
+#define COORD_SIZE 5
+#define POP_SIZE 256
+#define STEPS 128
 #define GENOME_SIZE 4
-#define MUTATION_RATE 0.01
+#define MUTATION_RATE 0.001
 #define INNER_NEURONS 4
 #define INPUT_NEURONS 11
 #define OUTPUT_NEURONS 4
 #define SCALE 10000
 
 enum input_type {
-	RANDOM,
-	OSCILLATOR,
-	AGE,
-	BLOCK_LR,
-	BLOCK_FORWARD,
-	POP_DENSITY,
-	POP_GRADIENT_LR,
-	POP_GRADIENT_FORWARD,
-	LOC_X,
-	LOC_Y,
-	LOC_WALL_NS,
-	LOC_WALL_EW
+	RANDOM = 0,
+	OSCILLATOR = 1,
+	AGE = 2,
+	BLOCK_LR = 3,
+	BLOCK_FORWARD = 4,
+	POP_DENSITY = 5,
+	POP_GRADIENT_LR = 6,
+	POP_GRADIENT_FORWARD = 7,
+	LOC_X = 8,
+	LOC_Y = 9,
+	LOC_WALL_NS = 10,
+	LOC_WALL_EW = 11
 };
 
-enum output_type { FORWARD, BACKWARD, LEFT, RIGHT };
-
-enum Direction { NORTH, EAST, SOUTH, WEST };
+enum output_type { FORWARD = 0, BACKWARD = 1, LEFT = 2, RIGHT = 3 };
 
 typedef uint32_t gene;
 
 int map[MAP_SIZE][MAP_SIZE];
 int TIME = 0;
+// Get a random seed from the OS entropy device, or whatever
+std::random_device rd;
+// Use the 64-bit Mersenne Twister 19937 generator and seed it with
+// entropy.
+std::mt19937_64 eng(rd());
+// Define the distribution, by default it goes from 0 to MAX(unsigned
+// long long) or what have you.
+std::uniform_int_distribution<uint32_t> dist;
+
+float initial_state[INPUT_NEURONS] = {0.0f};
 
 struct Coord {
-	int x;
-	int y;
-	Direction dir;
+	unsigned int x : COORD_SIZE = 0;
+	unsigned int y : COORD_SIZE = 0;
+	unsigned int dir : 2;
 };
 
 struct Connection {
@@ -90,8 +100,8 @@ struct Connection {
 class NeuralNet {
  private:
 	std::array<Connection, GENOME_SIZE> connections;
-	std::vector<std::pair<uint8_t, float>> output_neurons;
-	float current_state[INPUT_NEURONS];
+	std::array<float, OUTPUT_NEURONS> output;
+	std::array<float, INPUT_NEURONS> current_state;
 
 	float compute(uint8_t neuron_id) {
 		float sum = 0;
@@ -116,13 +126,11 @@ class NeuralNet {
 	}
 
  public:
-	NeuralNet(std::array<gene, GENOME_SIZE> genome,
-						float initial_state[INPUT_NEURONS]) {
+	void set_genome(std::array<gene, GENOME_SIZE> genome) {
 		for (int i = 0; i < GENOME_SIZE; i++) {
 			connections[i].from_gene(genome[i]);
 			if (connections[i].sink_type == 0) {
-				output_neurons.push_back(
-						std::make_pair((uint8_t)connections[i].sink, 0));
+				output[connections[i].sink] = -2;
 			}
 		}
 		for (int i = 0; i < INPUT_NEURONS; i++) {
@@ -130,17 +138,13 @@ class NeuralNet {
 		}
 	}
 
-	std::vector<std::pair<uint8_t, float>> step() {
-		for (auto &neuron : output_neurons) {
-			uint8_t neuron_id = neuron.first;
-			auto res = [&](Connection c) {
-				if (neuron.second == 0 & c.sink_type == 0 && c.sink == neuron_id) {
-					neuron.second = compute(neuron_id);
-				}
-			};
-			std::for_each(connections.cbegin(), connections.cend(), res);
+	std::array<float, OUTPUT_NEURONS> step() {
+		for (int i = 0; i < OUTPUT_NEURONS; i++) {
+			if (output[i] == -2) {
+				output[i] = compute(i);
+			}
 		}
-		return output_neurons;
+		return output;
 	}
 
 	void update_state(float new_state[INPUT_NEURONS]) {
@@ -150,51 +154,85 @@ class NeuralNet {
 	}
 };
 
+bool valid_gene(gene g) {
+	Connection c;
+	c.from_gene(g);
+	return c.valid();
+}
+
+std::array<gene, GENOME_SIZE> new_genome() {
+	std::array<gene, GENOME_SIZE> genome;
+	for (int i = 0; i < GENOME_SIZE; i++) {
+		gene g;
+		do {
+			g = dist(eng);
+		} while (valid_gene(g));
+		genome[i] = g;
+	}
+	return genome;
+}
+
 class Cell {
  private:
 	Coord loc;
 	std::array<gene, GENOME_SIZE> genome;
-	NeuralNet *brain;
+	NeuralNet brain;
 
  public:
-	Cell(Coord loc, std::array<gene, GENOME_SIZE> genome,
-			 float state[INPUT_NEURONS]) {
-		this->loc = loc;
-		for (int i = 0; i < GENOME_SIZE; i++) {
-			this->genome[i] = genome[i];
-		}
-		this->brain = new NeuralNet(genome, state);
-	}
+	Cell() { set_genome(new_genome()); }
 
 	Coord get_loc() { return loc; }
 
-	void move(Direction dir) {
-		Coord *new_loc;
-		if (dir == Direction::NORTH) {
-			new_loc = new Coord(loc.x, loc.y + 1, Direction::NORTH);
-		} else if (dir == Direction::SOUTH) {
-			new_loc = new Coord(loc.x, loc.y - 1, Direction::SOUTH);
-		} else if (dir == Direction::EAST) {
-			new_loc = new Coord(loc.x + 1, loc.y, Direction::EAST);
+	void set_loc(uint16_t x, uint16_t y, uint8_t dir) {
+		loc.x = x;
+		loc.y = y;
+		loc.dir = dir;
+	}
+
+	std::array<gene, GENOME_SIZE> get_genome() { return genome; }
+
+	void set_genome(std::array<gene, GENOME_SIZE> genome) {
+		map[loc.x][loc.y] = 0;
+		int x, y;
+		do {
+			x = dist(eng) % MAP_SIZE;
+			y = dist(eng) % MAP_SIZE;
+		} while (map[x][y] == 1);
+		map[x][y] = 1;
+		set_loc(x, y, (dist(eng) % 4));
+		this->genome = genome;
+		this->brain.set_genome(genome);
+	}
+
+	void move(uint8_t dir) {
+		Coord new_loc;
+		new_loc.dir = dir;
+		if (dir == 0) {
+			new_loc.x = loc.x;
+			new_loc.y = loc.y + 1;
+		} else if (dir == 2) {
+			new_loc.x = loc.x;
+			new_loc.y = loc.y - 1;
+		} else if (dir == 1) {
+			new_loc.x = loc.x + 1;
+			new_loc.y = loc.y;
 		} else {
-			new_loc = new Coord(loc.x - 1, loc.y, Direction::WEST);
+			new_loc.x = loc.x - 1;
+			new_loc.y = loc.y;
 		}
-		bool valid = new_loc->x >= 0 && new_loc->x < MAP_SIZE && new_loc->y >= 0 &&
-								 new_loc->y < MAP_SIZE && map[new_loc->x][new_loc->y] == 0;
+		bool valid = new_loc.x >= 0 && new_loc.x < MAP_SIZE && new_loc.y >= 0 &&
+								 new_loc.y < MAP_SIZE && map[new_loc.x][new_loc.y] == 0;
 		if (valid) {
+			/* std::cout << "Move: " << loc.x << ", " << loc.y << " -> " << new_loc.x
+								<< ", " << new_loc.y << std::endl; */
 			map[loc.x][loc.y] = 0;
-			loc = *new_loc;
-			map[new_loc->x][new_loc->y] = 1;
+			set_loc(new_loc.x, new_loc.y, new_loc.dir);
+			map[loc.x][loc.y] = 1;
 		}
 	}
 
-	Direction step() {
-		std::cout << "Cell at " << (int)loc.x << ", " << (int)loc.y << std::endl;
-		auto res = brain->step();
-		std::array<float, OUTPUT_NEURONS> output;
-		for (auto &neuron : res) {
-			output[neuron.first] = neuron.second;
-		}
+	uint8_t step() {
+		auto output = brain.step();
 		int max_index = 0;
 		for (int i = 0; i < OUTPUT_NEURONS; i++) {
 			if (output[i] > output[max_index]) {
@@ -203,23 +241,23 @@ class Cell {
 		}
 		switch (static_cast<output_type>(max_index)) {
 			case output_type::LEFT:
-				return (Direction)((int)loc.dir - 1);
+				return (loc.dir + 3) % 4;
 			case output_type::RIGHT:
-				return (Direction)((int)loc.dir + 1);
+				return (loc.dir + 1) % 4;
 			case output_type::FORWARD:
 				return loc.dir;
 			case output_type::BACKWARD:
-				return (Direction)((int)loc.dir + 2);
+				return (loc.dir + 2) % 4;
 		}
 	}
 
 	void update_state(float new_state[INPUT_NEURONS]) {
-		brain->update_state(new_state);
+		brain.update_state(new_state);
 	}
 };
 
 void print_map(int map[MAP_SIZE][MAP_SIZE]) {
-	system("clear||cls");
+	system("cls");
 	for (int i = MAP_SIZE - 1; i >= 0; i--) {
 		for (int j = 0; j < MAP_SIZE; j++) {
 			if (map[j][i] == 1) {
@@ -232,35 +270,12 @@ void print_map(int map[MAP_SIZE][MAP_SIZE]) {
 	}
 }
 
-bool valid_gene(gene g) {
-	Connection c;
-	c.from_gene(g);
-	return c.valid();
-}
-
-std::array<gene, GENOME_SIZE> genome(
-		std::uniform_int_distribution<uint32_t> &dist, std::mt19937_64 &eng) {
-	std::array<gene, GENOME_SIZE> genome;
-	for (int i = 0; i < GENOME_SIZE; i++) {
-		gene g;
-		do {
-			g = dist(eng);
-		} while (valid_gene(g));
-		genome[i] = g;
-	}
-	return genome;
-}
-
-float state[INPUT_NEURONS] = {0.0f};
-
-void update_state(std::array<Cell *, POP_SIZE> &cells,
-									std::uniform_int_distribution<uint32_t> &dist,
-									std::mt19937_64 &eng) {
+void update_state(std::array<Cell, POP_SIZE> &cells) {
 	for (auto i : std::views::iota(0, POP_SIZE)) {
 		float state[INPUT_NEURONS] = {0.0f};
 		for (auto j : std::views::iota(0, INPUT_NEURONS)) {
 			input_type input = static_cast<input_type>(j);
-			Coord loc = cells[i]->get_loc();
+			Coord loc = cells[i].get_loc();
 			int left = 0, right = 0, front = 0, back = 0;
 			int sum = 0;
 			switch (input) {
@@ -279,7 +294,7 @@ void update_state(std::array<Cell *, POP_SIZE> &cells,
 					state[j] = loc.y / (float)MAP_SIZE;
 				case input_type::BLOCK_LR:
 					sum = 0;
-					if (loc.dir == Direction::NORTH || loc.dir == Direction::SOUTH) {
+					if (loc.dir == 0 || loc.dir == 2) {
 						if (loc.x > 0) {
 							sum += map[loc.x - 1][loc.y];
 						}
@@ -298,13 +313,13 @@ void update_state(std::array<Cell *, POP_SIZE> &cells,
 					}
 					break;
 				case input_type::BLOCK_FORWARD:
-					if (loc.dir == Direction::NORTH && loc.y < MAP_SIZE - 1) {
+					if (loc.dir == 0 && loc.y < MAP_SIZE - 1) {
 						state[j] = map[loc.x][loc.y + 1];
-					} else if (loc.dir == Direction::SOUTH && loc.y > 0) {
+					} else if (loc.dir == 2 && loc.y > 0) {
 						state[j] = map[loc.x][loc.y - 1];
-					} else if (loc.dir == Direction::EAST && loc.x < MAP_SIZE - 1) {
+					} else if (loc.dir == 1 && loc.x < MAP_SIZE - 1) {
 						state[j] = map[loc.x + 1][loc.y];
-					} else if (loc.dir == Direction::WEST && loc.x > 0) {
+					} else if (loc.dir == 3 && loc.x > 0) {
 						state[j] = map[loc.x - 1][loc.y];
 					} else {
 						state[j] = 1;
@@ -388,7 +403,7 @@ void update_state(std::array<Cell *, POP_SIZE> &cells,
 					state[j] = sum / 8.0f;
 					break;
 				case input_type::POP_GRADIENT_LR:
-					if (loc.dir == Direction::NORTH) {
+					if (loc.dir == 0) {
 						for (int i = loc.x - 1; i >= 0; i--) {
 							for (int j = 0; j < MAP_SIZE; j++) {
 								left += map[i][j];
@@ -399,7 +414,7 @@ void update_state(std::array<Cell *, POP_SIZE> &cells,
 								right += map[i][j];
 							}
 						}
-					} else if (loc.dir == Direction::SOUTH) {
+					} else if (loc.dir == 2) {
 						for (int i = loc.x + 1; i >= 0; i--) {
 							for (int j = 0; j < MAP_SIZE; j++) {
 								left += map[i][j];
@@ -410,7 +425,7 @@ void update_state(std::array<Cell *, POP_SIZE> &cells,
 								right += map[i][j];
 							}
 						}
-					} else if (loc.dir == Direction::EAST) {
+					} else if (loc.dir == 1) {
 						for (int i = loc.y + 1; i >= 0; i--) {
 							for (int j = 0; j < MAP_SIZE; j++) {
 								left += map[j][i];
@@ -421,7 +436,7 @@ void update_state(std::array<Cell *, POP_SIZE> &cells,
 								right += map[j][i];
 							}
 						}
-					} else if (loc.dir == Direction::WEST) {
+					} else if (loc.dir == 3) {
 						for (int i = loc.y - 1; i >= 0; i--) {
 							for (int j = 0; j < MAP_SIZE; j++) {
 								left += map[j][i];
@@ -436,7 +451,7 @@ void update_state(std::array<Cell *, POP_SIZE> &cells,
 					state[j] = (float)(left - right) / POP_SIZE;
 					break;
 				case input_type::POP_GRADIENT_FORWARD:
-					if (loc.dir == Direction::NORTH) {
+					if (loc.dir == 0) {
 						for (int i = loc.y + 1; i >= 0; i--) {
 							for (int j = 0; j < MAP_SIZE; j++) {
 								front += map[i][j];
@@ -447,7 +462,7 @@ void update_state(std::array<Cell *, POP_SIZE> &cells,
 								back += map[i][j];
 							}
 						}
-					} else if (loc.dir == Direction::SOUTH) {
+					} else if (loc.dir == 2) {
 						for (int i = loc.y - 1; i >= 0; i--) {
 							for (int j = 0; j < MAP_SIZE; j++) {
 								front += map[i][j];
@@ -458,7 +473,7 @@ void update_state(std::array<Cell *, POP_SIZE> &cells,
 								back += map[i][j];
 							}
 						}
-					} else if (loc.dir == Direction::EAST) {
+					} else if (loc.dir == 1) {
 						for (int i = loc.x + 1; i >= 0; i--) {
 							for (int j = 0; j < MAP_SIZE; j++) {
 								front += map[j][i];
@@ -469,7 +484,7 @@ void update_state(std::array<Cell *, POP_SIZE> &cells,
 								back += map[j][i];
 							}
 						}
-					} else if (loc.dir == Direction::WEST) {
+					} else if (loc.dir == 3) {
 						for (int i = loc.x - 1; i >= 0; i--) {
 							for (int j = 0; j < MAP_SIZE; j++) {
 								front += map[j][i];
@@ -485,57 +500,78 @@ void update_state(std::array<Cell *, POP_SIZE> &cells,
 					break;
 			}
 		}
-		cells[i]->update_state(state);
+		cells[i].update_state(state);
 	}
 }
 
 int main() {
-	// Get a random seed from the OS entropy device, or whatever
-	std::random_device rd;
-	// Use the 64-bit Mersenne Twister 19937 generator and seed it with
-	// entropy.
-	std::mt19937_64 eng(rd());
-	// Define the distribution, by default it goes from 0 to MAX(unsigned
-	// long long) or what have you.
-	std::uniform_int_distribution<uint32_t> dist;
-
 	for (int i = 0; i < MAP_SIZE; i++) {
 		for (int j = 0; j < MAP_SIZE; j++) {
 			map[i][j] = 0;
 		}
 	}
 
-	std::array<Cell *, POP_SIZE> cells;
-	for (auto i : std::views::iota(0, POP_SIZE)) {
-		uint8_t x, y;
-		do {
-			x = dist(eng) % MAP_SIZE;
-			y = dist(eng) % MAP_SIZE;
-		} while (map[x][y] == 1);
-		Coord c(x, y, (Direction)(dist(eng) % 4));
-		cells[i] = new Cell(c, genome(dist, eng), state);
-		map[x][y] = 1;
-	}
+	std::array<Cell, POP_SIZE> cells;
 
 	print_map(map);
 
+	float acc = 0;
 	do {
-		std::this_thread::sleep_for(std::chrono::seconds(1));
+		TIME = 0;
+		do {
+			std::cout << "TIME: " << TIME << std::endl;
+			// std::this_thread::sleep_for(std::chrono::milliseconds(10));
 
-		std::cout << "TIME: " << TIME << std::endl;
-		update_state(cells, dist, eng);
-		for (auto i : std::views::iota(0, POP_SIZE)) {
-			Direction d = cells[i]->step();
-			std::cout << "Cell " << i << std::endl;
-			cells[i]->move(d);
+			update_state(cells);
+			for (auto i : std::views::iota(0, POP_SIZE)) {
+				uint8_t d = cells[i].step();
+				cells[i].move(d);
+			}
+
+			print_map(map);
+			TIME++;
+		} while (TIME < STEPS);
+
+		const auto [ret, last] = std::ranges::remove_if(
+				cells, [](Cell c) { return c.get_loc().x < (MAP_SIZE / 2); });
+		const auto valid = std::ranges::distance(cells.begin(), ret);
+		acc = (float)valid / POP_SIZE;
+		std::cout << "ACC: " << acc << std::endl;
+
+		std::vector<std::array<gene, GENOME_SIZE>> new_genes;
+		for (auto cell = cells.begin(); cell != ret; cell++) {
+			new_genes.push_back(cell->get_genome());
 		}
+		std::ranges::shuffle(new_genes, eng);
 
-		print_map(map);
-		TIME++;
-	} while (TIME < STEPS);
+		size_t child_num = ceil(POP_SIZE / (acc / 2));
+		size_t index = 0;
+		for (auto i = 0; i < valid; i += 2) {
+			auto g1 = new_genes[i], g2 = new_genes[i + 1];
+			std::array<gene, GENOME_SIZE * 2> box;
+			std::ranges::copy(g1, box.begin());
+			std::ranges::copy(g2, box.begin() + GENOME_SIZE);
 
-	for (auto i : std::views::iota(0, POP_SIZE)) {
-		delete cells[i];
-	}
+			for (auto j = 0; j < child_num; j++) {
+				std::array<gene, GENOME_SIZE> child;
+				std::ranges::sample(box, child.begin(), GENOME_SIZE, eng);
+				// generate random number between 0 and 1 with MUTATION_RATE
+				size_t r =
+						std::uniform_int_distribution<size_t>(0, (1 / MUTATION_RATE))(eng);
+				if (r == 0) {
+					size_t bit = std::uniform_int_distribution<size_t>(
+							0, 8 * sizeof(gene) * GENOME_SIZE)(eng);
+					child[bit / (8 * sizeof(gene))] ^= 1 << (bit % (8 * sizeof(gene)));
+				}
+
+				if (index >= POP_SIZE) {
+					break;
+				}
+				cells[index].set_genome(child);
+				index++;
+			}
+		}
+	} while (acc < 0.8);
+
 	return 0;
 }
