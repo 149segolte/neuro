@@ -3,13 +3,15 @@
 #include <algorithm>
 #include <array>
 #include <iostream>
+#include <limits>
+#include <random>
 #include <ranges>
 #include <string>
 #include <utility>
 #include <vector>
 
 #define MAP_SIZE 32
-#define POP_SIZE 1000
+#define POP_SIZE 100
 #define STEPS 300
 #define GENOME_SIZE 4
 #define MUTATION_RATE 0.01
@@ -44,6 +46,15 @@ struct Connection {
 		g |= (sink & 127) << 16;
 		g |= weight & 65535;
 		return g;
+	}
+
+	bool valid() {
+		bool valid = true;
+		valid &= source_type == 0 || source_type == 1;
+		valid &= source < INPUT_NEURONS + INNER_NEURONS;
+		valid &= sink_type == 0 || sink_type == 1;
+		valid &= sink < INNER_NEURONS + OUTPUT_NEURONS;
+		return valid;
 	}
 };
 
@@ -127,8 +138,7 @@ class Cell {
 		this->brain = new NeuralNet(genome, state);
 	}
 
-	void step(float state[INPUT_NEURONS]) {
-		brain->update_state(state);
+	void step() {
 		auto res = brain->step();
 		for (auto &neuron : res) {
 			if (neuron.first == 0) {
@@ -142,37 +152,83 @@ class Cell {
 			}
 		}
 	}
+
+	void update_state(float new_state[INPUT_NEURONS]) {
+		brain->update_state(new_state);
+	}
 };
 
-void print(int map[MAP_SIZE][MAP_SIZE]) {
+void print_map(int map[MAP_SIZE][MAP_SIZE]) {
 	for (int i = 0; i < MAP_SIZE; i++) {
 		for (int j = 0; j < MAP_SIZE; j++) {
-			std::cout << map[i][j] << " ";
+			if (map[i][j] == 1) {
+				std::cout << "X ";
+			} else {
+				std::cout << "  ";
+			}
 		}
 		std::cout << std::endl;
 	}
 }
 
-std::array<gene, GENOME_SIZE> genome();
+bool valid_gene(gene g) {
+	Connection c;
+	c.from_gene(g);
+	return c.valid();
+}
+
+std::array<gene, GENOME_SIZE> genome(
+	std::uniform_int_distribution<uint32_t> &dist, std::mt19937_64 &eng) {
+	std::array<gene, GENOME_SIZE> genome;
+	for (int i = 0; i < GENOME_SIZE; i++) {
+		gene g;
+		do {
+			g = dist(eng);
+		} while (valid_gene(g));
+		genome[i] = g;
+	}
+	return genome;
+}
+
 float state[INPUT_NEURONS] = {0.0f};
 
 int main() {
+	// Get a random seed from the OS entropy device, or whatever
+	std::random_device rd;
+	// Use the 64-bit Mersenne Twister 19937 generator and seed it with
+	// entropy.
+	std::mt19937_64 eng(rd());
+	// Define the distribution, by default it goes from 0 to MAX(unsigned
+	// long long) or what have you.
+	std::uniform_int_distribution<uint32_t> dist;
+
 	int map[MAP_SIZE][MAP_SIZE];
 	for (int i = 0; i < MAP_SIZE; i++) {
 		for (int j = 0; j < MAP_SIZE; j++) {
 			map[i][j] = 0;
-			if (i == 0 || j == 0 || i == MAP_SIZE - 1 || j == MAP_SIZE - 1) {
-				map[i][j] = 1;
-			}
 		}
 	}
 
 	std::array<Cell *, POP_SIZE> cells;
 	for (auto i : std::views::iota(1, POP_SIZE)) {
-		int x = rand() % (MAP_SIZE - 2) + 1;
-		int y = rand() % (MAP_SIZE - 2) + 1;
-		cells[i] = new Cell(Coord(x, y), genome(), state);
+		uint8_t x, y;
+		do {
+			x = dist(eng) % MAP_SIZE;
+			y = dist(eng) % MAP_SIZE;
+		} while (map[x][y] == 1);
+		cells[i] = new Cell(Coord(x, y), genome(dist, eng), state);
+		map[x][y] = 1;
 	}
 
+	print_map(map);
+
+	for (auto i : std::views::iota(1, POP_SIZE)) {
+		float state[INPUT_NEURONS] = {0.0f};
+		cells[i]->update_state(state);
+	}
+
+	for (auto i : std::views::iota(1, POP_SIZE)) {
+		delete cells[i];
+	}
 	return 0;
 }
