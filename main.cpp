@@ -179,7 +179,8 @@ class Cell {
 		} else {
 			new_loc = new Coord(loc.x - 1, loc.y, Direction::WEST);
 		}
-		bool valid = !map[new_loc->x][new_loc->y];
+		bool valid = new_loc->x >= 0 && new_loc->x < MAP_SIZE && new_loc->y >= 0 &&
+								 new_loc->y < MAP_SIZE && map[new_loc->x][new_loc->y] == 0;
 		if (valid) {
 			map[loc.x][loc.y] = 0;
 			loc = *new_loc;
@@ -277,21 +278,36 @@ void update_state(std::array<Cell *, POP_SIZE> &cells,
 				case input_type::LOC_Y:
 					state[j] = loc.y / (float)MAP_SIZE;
 				case input_type::BLOCK_LR:
+					sum = 0;
 					if (loc.dir == Direction::NORTH || loc.dir == Direction::SOUTH) {
-						state[j] = (map[loc.x - 1][loc.y] + map[loc.x + 1][loc.y]) / 2.0f;
+						if (loc.x > 0) {
+							sum += map[loc.x - 1][loc.y];
+						}
+						if (loc.x < MAP_SIZE - 1) {
+							sum += map[loc.x + 1][loc.y];
+						}
+						state[j] = sum / 2.0f;
 					} else {
-						state[j] = (map[loc.x][loc.y - 1] + map[loc.x][loc.y + 1]) / 2.0f;
+						if (loc.y > 0) {
+							sum += map[loc.x][loc.y - 1];
+						}
+						if (loc.y < MAP_SIZE - 1) {
+							sum += map[loc.x][loc.y + 1];
+						}
+						state[j] = sum / 2.0f;
 					}
 					break;
 				case input_type::BLOCK_FORWARD:
-					if (loc.dir == Direction::NORTH) {
+					if (loc.dir == Direction::NORTH && loc.y < MAP_SIZE - 1) {
 						state[j] = map[loc.x][loc.y + 1];
-					} else if (loc.dir == Direction::SOUTH) {
+					} else if (loc.dir == Direction::SOUTH && loc.y > 0) {
 						state[j] = map[loc.x][loc.y - 1];
-					} else if (loc.dir == Direction::EAST) {
+					} else if (loc.dir == Direction::EAST && loc.x < MAP_SIZE - 1) {
 						state[j] = map[loc.x + 1][loc.y];
-					} else {
+					} else if (loc.dir == Direction::WEST && loc.x > 0) {
 						state[j] = map[loc.x - 1][loc.y];
+					} else {
+						state[j] = 1;
 					}
 					break;
 				case input_type::LOC_WALL_EW:
@@ -337,18 +353,39 @@ void update_state(std::array<Cell *, POP_SIZE> &cells,
 								sum += map[loc.x + 1][loc.y + 1];
 								sum += map[loc.x][loc.y + 1];
 							}
+						} else if (loc.x == MAP_SIZE - 1) {
+							if (loc.y == 0) {
+								sum += map[loc.x - 1][loc.y];
+								sum += map[loc.x - 1][loc.y + 1];
+								sum += map[loc.x][loc.y + 1];
+							} else if (loc.y == MAP_SIZE - 1) {
+								sum += map[loc.x][loc.y - 1];
+								sum += map[loc.x - 1][loc.y - 1];
+								sum += map[loc.x - 1][loc.y];
+							} else {
+								sum += map[loc.x][loc.y - 1];
+								sum += map[loc.x - 1][loc.y - 1];
+								sum += map[loc.x - 1][loc.y];
+								sum += map[loc.x - 1][loc.y + 1];
+								sum += map[loc.x][loc.y + 1];
+							}
 						} else {
 							if (loc.y == 0) {
-							} else {
+								sum += map[loc.x - 1][loc.y];
+								sum += map[loc.x - 1][loc.y + 1];
+								sum += map[loc.x][loc.y + 1];
+								sum += map[loc.x + 1][loc.y + 1];
+								sum += map[loc.x + 1][loc.y];
+							} else if (loc.y == MAP_SIZE - 1) {
+								sum += map[loc.x - 1][loc.y];
+								sum += map[loc.x - 1][loc.y - 1];
+								sum += map[loc.x][loc.y - 1];
+								sum += map[loc.x + 1][loc.y - 1];
+								sum += map[loc.x + 1][loc.y];
 							}
 						}
 					}
-					state[j] = (map[loc.x - 1][loc.y - 1] + map[loc.x][loc.y - 1] +
-											map[loc.x + 1][loc.y - 1] + map[loc.x - 1][loc.y] +
-											map[loc.x - 1][loc.y] + map[loc.x + 1][loc.y] +
-											map[loc.x - 1][loc.y + 1] + map[loc.x][loc.y + 1] +
-											map[loc.x + 1][loc.y + 1]) /
-										 8.0f;
+					state[j] = sum / 8.0f;
 					break;
 				case input_type::POP_GRADIENT_LR:
 					if (loc.dir == Direction::NORTH) {
