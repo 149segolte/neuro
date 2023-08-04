@@ -43,6 +43,8 @@ enum Direction { NORTH, EAST, SOUTH, WEST };
 
 typedef uint32_t gene;
 
+int map[MAP_SIZE][MAP_SIZE];
+
 struct Coord {
 	int x;
 	int y;
@@ -167,17 +169,22 @@ class Cell {
 	Coord get_loc() { return loc; }
 
 	void move(Direction dir) {
+		Coord *new_loc;
 		if (dir == Direction::NORTH) {
-			Coord new_loc(loc.x, loc.y + 1, Direction::NORTH);
+			new_loc = new Coord(loc.x, loc.y + 1, Direction::NORTH);
 		} else if (dir == Direction::SOUTH) {
-			Coord new_loc(loc.x, loc.y - 1, Direction::SOUTH);
+			new_loc = new Coord(loc.x, loc.y - 1, Direction::SOUTH);
 		} else if (dir == Direction::EAST) {
-			Coord new_loc(loc.x + 1, loc.y, Direction::EAST);
-		} else if (dir == Direction::WEST) {
-			Coord new_loc(loc.x - 1, loc.y, Direction::WEST);
+			new_loc = new Coord(loc.x + 1, loc.y, Direction::EAST);
+		} else {
+			new_loc = new Coord(loc.x - 1, loc.y, Direction::WEST);
 		}
-		bool valid = !map[new_loc.x][new_loc.y];
-		loc = valid ? new_loc : loc;
+		bool valid = !map[new_loc->x][new_loc->y];
+		if (valid) {
+			map[loc.x][loc.y] = 0;
+			loc = *new_loc;
+			map[new_loc->x][new_loc->y] = 1;
+		}
 	}
 
 	void step() {
@@ -201,9 +208,10 @@ class Cell {
 };
 
 void print_map(int map[MAP_SIZE][MAP_SIZE]) {
-	for (int i = 0; i < MAP_SIZE; i++) {
+	system("clear||cls");
+	for (int i = MAP_SIZE - 1; i >= 0; i--) {
 		for (int j = 0; j < MAP_SIZE; j++) {
-			if (map[i][j] == 1) {
+			if (map[j][i] == 1) {
 				std::cout << "X ";
 			} else {
 				std::cout << "  ";
@@ -244,7 +252,6 @@ int main() {
 	// long long) or what have you.
 	std::uniform_int_distribution<uint32_t> dist;
 
-	int map[MAP_SIZE][MAP_SIZE];
 	int TIME = 0;
 	for (int i = 0; i < MAP_SIZE; i++) {
 		for (int j = 0; j < MAP_SIZE; j++) {
@@ -255,6 +262,7 @@ int main() {
 	std::array<Cell *, POP_SIZE> cells;
 	Coord c(0, 0, Direction::NORTH);
 	cells[0] = new Cell(c, genome(dist, eng), state);
+	map[0][0] = 1;
 	for (auto i : std::views::iota(1, POP_SIZE)) {
 		uint8_t x, y;
 		do {
@@ -273,6 +281,7 @@ int main() {
 		for (auto j : std::views::iota(1, INPUT_NEURONS)) {
 			input_type input = static_cast<input_type>(j);
 			Coord loc = cells[i]->get_loc();
+			int left = 0, right = 0, front = 0, back = 0;
 			switch (input) {
 				case input_type::RANDOM:
 					state[j] =
@@ -302,9 +311,9 @@ int main() {
 					break;
 				case input_type::BLOCK_FORWARD:
 					if (loc.dir == Direction::NORTH) {
-						state[j] = map[loc.x][loc.y - 1];
-					} else if (loc.dir == Direction::SOUTH) {
 						state[j] = map[loc.x][loc.y + 1];
+					} else if (loc.dir == Direction::SOUTH) {
+						state[j] = map[loc.x][loc.y - 1];
 					} else if (loc.dir == Direction::EAST) {
 						state[j] = map[loc.x + 1][loc.y];
 					} else {
@@ -312,7 +321,123 @@ int main() {
 					}
 					break;
 				case input_type::LOC_WALL_EW:
-
+					if (loc.x > MAP_SIZE / 2) {
+						state[j] = 2 - ((loc.x * 2) / (float)MAP_SIZE);
+					} else {
+						state[j] = ((loc.x * 2) / (float)MAP_SIZE);
+					}
+					break;
+				case input_type::LOC_WALL_NS:
+					if (loc.y > MAP_SIZE / 2) {
+						state[j] = 2 - ((loc.y * 2) / (float)MAP_SIZE);
+					} else {
+						state[j] = ((loc.y * 2) / (float)MAP_SIZE);
+					}
+					break;
+				case input_type::POP_DENSITY:
+					state[j] =
+						(map[loc.x - 1][loc.y - 1] + map[loc.x][loc.y - 1] +
+						 map[loc.x + 1][loc.y - 1] + map[loc.x - 1][loc.y] +
+						 map[loc.x - 1][loc.y] + map[loc.x + 1][loc.y] +
+						 map[loc.x - 1][loc.y + 1] + map[loc.x][loc.y + 1] +
+						 map[loc.x + 1][loc.y + 1]) /
+						8.0f;
+					break;
+				case input_type::POP_GRADIENT_LR:
+					if (loc.dir == Direction::NORTH) {
+						for (int i = loc.x - 1; i >= 0; i--) {
+							for (int j = 0; j < MAP_SIZE; j++) {
+								left += map[i][j];
+							}
+						}
+						for (int i = loc.x + 1; i < MAP_SIZE; i++) {
+							for (int j = 0; j < MAP_SIZE; j++) {
+								right += map[i][j];
+							}
+						}
+					} else if (loc.dir == Direction::SOUTH) {
+						for (int i = loc.x + 1; i >= 0; i--) {
+							for (int j = 0; j < MAP_SIZE; j++) {
+								left += map[i][j];
+							}
+						}
+						for (int i = loc.x - 1; i < MAP_SIZE; i++) {
+							for (int j = 0; j < MAP_SIZE; j++) {
+								right += map[i][j];
+							}
+						}
+					} else if (loc.dir == Direction::EAST) {
+						for (int i = loc.y + 1; i >= 0; i--) {
+							for (int j = 0; j < MAP_SIZE; j++) {
+								left += map[j][i];
+							}
+						}
+						for (int i = loc.y - 1; i < MAP_SIZE; i++) {
+							for (int j = 0; j < MAP_SIZE; j++) {
+								right += map[j][i];
+							}
+						}
+					} else if (loc.dir == Direction::WEST) {
+						for (int i = loc.y - 1; i >= 0; i--) {
+							for (int j = 0; j < MAP_SIZE; j++) {
+								left += map[j][i];
+							}
+						}
+						for (int i = loc.y + 1; i < MAP_SIZE; i++) {
+							for (int j = 0; j < MAP_SIZE; j++) {
+								right += map[j][i];
+							}
+						}
+					}
+					state[j] = (float)(left - right) / POP_SIZE;
+					break;
+				case input_type::POP_GRADIENT_FORWARD:
+					if (loc.dir == Direction::NORTH) {
+						for (int i = loc.y + 1; i >= 0; i--) {
+							for (int j = 0; j < MAP_SIZE; j++) {
+								front += map[i][j];
+							}
+						}
+						for (int i = loc.y - 1; i < MAP_SIZE; i++) {
+							for (int j = 0; j < MAP_SIZE; j++) {
+								back += map[i][j];
+							}
+						}
+					} else if (loc.dir == Direction::SOUTH) {
+						for (int i = loc.y - 1; i >= 0; i--) {
+							for (int j = 0; j < MAP_SIZE; j++) {
+								front += map[i][j];
+							}
+						}
+						for (int i = loc.y + 1; i < MAP_SIZE; i++) {
+							for (int j = 0; j < MAP_SIZE; j++) {
+								back += map[i][j];
+							}
+						}
+					} else if (loc.dir == Direction::EAST) {
+						for (int i = loc.x + 1; i >= 0; i--) {
+							for (int j = 0; j < MAP_SIZE; j++) {
+								front += map[j][i];
+							}
+						}
+						for (int i = loc.x - 1; i < MAP_SIZE; i++) {
+							for (int j = 0; j < MAP_SIZE; j++) {
+								back += map[j][i];
+							}
+						}
+					} else if (loc.dir == Direction::WEST) {
+						for (int i = loc.x - 1; i >= 0; i--) {
+							for (int j = 0; j < MAP_SIZE; j++) {
+								front += map[j][i];
+							}
+						}
+						for (int i = loc.x + 1; i < MAP_SIZE; i++) {
+							for (int j = 0; j < MAP_SIZE; j++) {
+								back += map[j][i];
+							}
+						}
+					}
+					state[j] = (float)(back - front) / POP_SIZE;
 					break;
 			}
 		}
