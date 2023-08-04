@@ -2,11 +2,13 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <iostream>
 #include <limits>
 #include <random>
 #include <ranges>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -16,12 +18,36 @@
 #define GENOME_SIZE 4
 #define MUTATION_RATE 0.01
 #define INNER_NEURONS 4
-#define INPUT_NEURONS 21
-#define OUTPUT_NEURONS 11
+#define INPUT_NEURONS 11
+#define OUTPUT_NEURONS 4
 #define SCALE 10000
 
-typedef std::pair<uint8_t, uint8_t> Coord;
+enum input_type {
+	RANDOM,
+	OSCILLATOR,
+	AGE,
+	BLOCK_LR,
+	BLOCK_FORWARD,
+	POP_DENSITY,
+	POP_GRADIENT_LR,
+	POP_GRADIENT_FORWARD,
+	LOC_X,
+	LOC_Y,
+	LOC_WALL_NS,
+	LOC_WALL_EW
+};
+
+enum output_type { FORWARD, BACKWARD, LEFT, RIGHT };
+
+enum Direction { NORTH, EAST, SOUTH, WEST };
+
 typedef uint32_t gene;
+
+struct Coord {
+	int x;
+	int y;
+	Direction dir;
+};
 
 struct Connection {
 	unsigned int source_type : 1;
@@ -138,6 +164,22 @@ class Cell {
 		this->brain = new NeuralNet(genome, state);
 	}
 
+	Coord get_loc() { return loc; }
+
+	void move(Direction dir) {
+		if (dir == Direction::NORTH) {
+			Coord new_loc(loc.x, loc.y + 1, Direction::NORTH);
+		} else if (dir == Direction::SOUTH) {
+			Coord new_loc(loc.x, loc.y - 1, Direction::SOUTH);
+		} else if (dir == Direction::EAST) {
+			Coord new_loc(loc.x + 1, loc.y, Direction::EAST);
+		} else if (dir == Direction::WEST) {
+			Coord new_loc(loc.x - 1, loc.y, Direction::WEST);
+		}
+		bool valid = !map[new_loc.x][new_loc.y];
+		loc = valid ? new_loc : loc;
+	}
+
 	void step() {
 		auto res = brain->step();
 		for (auto &neuron : res) {
@@ -203,6 +245,7 @@ int main() {
 	std::uniform_int_distribution<uint32_t> dist;
 
 	int map[MAP_SIZE][MAP_SIZE];
+	int TIME = 0;
 	for (int i = 0; i < MAP_SIZE; i++) {
 		for (int j = 0; j < MAP_SIZE; j++) {
 			map[i][j] = 0;
@@ -210,13 +253,16 @@ int main() {
 	}
 
 	std::array<Cell *, POP_SIZE> cells;
+	Coord c(0, 0, Direction::NORTH);
+	cells[0] = new Cell(c, genome(dist, eng), state);
 	for (auto i : std::views::iota(1, POP_SIZE)) {
 		uint8_t x, y;
 		do {
 			x = dist(eng) % MAP_SIZE;
 			y = dist(eng) % MAP_SIZE;
 		} while (map[x][y] == 1);
-		cells[i] = new Cell(Coord(x, y), genome(dist, eng), state);
+		Coord c(x, y, (Direction)(dist(eng) % 4));
+		cells[i] = new Cell(c, genome(dist, eng), state);
 		map[x][y] = 1;
 	}
 
@@ -224,8 +270,60 @@ int main() {
 
 	for (auto i : std::views::iota(1, POP_SIZE)) {
 		float state[INPUT_NEURONS] = {0.0f};
+		for (auto j : std::views::iota(1, INPUT_NEURONS)) {
+			input_type input = static_cast<input_type>(j);
+			Coord loc = cells[i]->get_loc();
+			switch (input) {
+				case input_type::RANDOM:
+					state[j] =
+						(int32_t)(dist(eng) - UINT16_MAX) / (float)INT16_MAX;
+					break;
+				case input_type::OSCILLATOR:
+					state[j] = sin(TIME / 1.0f);
+					break;
+				case input_type::AGE:
+					state[j] = TIME / (float)STEPS;
+					break;
+				case input_type::LOC_X:
+					state[j] = loc.x / (float)MAP_SIZE;
+				case input_type::LOC_Y:
+					state[j] = loc.y / (float)MAP_SIZE;
+				case input_type::BLOCK_LR:
+					if (loc.dir == Direction::NORTH ||
+						loc.dir == Direction::SOUTH) {
+						state[j] =
+							(map[loc.x - 1][loc.y] + map[loc.x + 1][loc.y]) /
+							2.0f;
+					} else {
+						state[j] =
+							(map[loc.x][loc.y - 1] + map[loc.x][loc.y + 1]) /
+							2.0f;
+					}
+					break;
+				case input_type::BLOCK_FORWARD:
+					if (loc.dir == Direction::NORTH) {
+						state[j] = map[loc.x][loc.y - 1];
+					} else if (loc.dir == Direction::SOUTH) {
+						state[j] = map[loc.x][loc.y + 1];
+					} else if (loc.dir == Direction::EAST) {
+						state[j] = map[loc.x + 1][loc.y];
+					} else {
+						state[j] = map[loc.x - 1][loc.y];
+					}
+					break;
+				case input_type::LOC_WALL_EW:
+
+					break;
+			}
+		}
 		cells[i]->update_state(state);
 	}
+
+	std::this_thread::sleep_for(std::chrono::seconds(3));
+
+	cells[0]->move(Direction::EAST);
+
+	print_map(map);
 
 	for (auto i : std::views::iota(1, POP_SIZE)) {
 		delete cells[i];
