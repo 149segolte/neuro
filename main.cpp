@@ -4,6 +4,7 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <execution>
 #include <iostream>
 #include <limits>
 #include <random>
@@ -13,16 +14,16 @@
 #include <utility>
 #include <vector>
 
-#define MAP_SIZE 36
-#define COORD_SIZE 5
-#define POP_SIZE 256
-#define STEPS 128
-#define GENOME_SIZE 4
-#define MUTATION_RATE 0.001
+#define MAP_SIZE 64
+#define COORD_SIZE 6
+#define POP_SIZE 512
+#define STEPS 256
+#define GENOME_SIZE 6
+#define MUTATION_RATE 0.005
 #define INNER_NEURONS 4
 #define INPUT_NEURONS 11
 #define OUTPUT_NEURONS 4
-#define SCALE 10000
+#define SCALE 8000
 
 enum input_type {
 	RANDOM = 0,
@@ -257,7 +258,6 @@ class Cell {
 };
 
 void print_map(int map[MAP_SIZE][MAP_SIZE]) {
-	system("cls");
 	for (int i = MAP_SIZE - 1; i >= 0; i--) {
 		for (int j = 0; j < MAP_SIZE; j++) {
 			if (map[j][i] == 1) {
@@ -271,237 +271,238 @@ void print_map(int map[MAP_SIZE][MAP_SIZE]) {
 }
 
 void update_state(std::array<Cell, POP_SIZE> &cells) {
-	for (auto i : std::views::iota(0, POP_SIZE)) {
-		float state[INPUT_NEURONS] = {0.0f};
-		for (auto j : std::views::iota(0, INPUT_NEURONS)) {
-			input_type input = static_cast<input_type>(j);
-			Coord loc = cells[i].get_loc();
-			int left = 0, right = 0, front = 0, back = 0;
-			int sum = 0;
-			switch (input) {
-				case input_type::RANDOM:
-					state[j] = (int32_t)(dist(eng) - UINT16_MAX) / (float)INT32_MAX;
-					break;
-				case input_type::OSCILLATOR:
-					state[j] = sin(TIME / 1.0f);
-					break;
-				case input_type::AGE:
-					state[j] = TIME / (float)STEPS;
-					break;
-				case input_type::LOC_X:
-					state[j] = loc.x / (float)MAP_SIZE;
-				case input_type::LOC_Y:
-					state[j] = loc.y / (float)MAP_SIZE;
-				case input_type::BLOCK_LR:
-					sum = 0;
-					if (loc.dir == 0 || loc.dir == 2) {
-						if (loc.x > 0) {
-							sum += map[loc.x - 1][loc.y];
-						}
-						if (loc.x < MAP_SIZE - 1) {
-							sum += map[loc.x + 1][loc.y];
-						}
-						state[j] = sum / 2.0f;
-					} else {
-						if (loc.y > 0) {
-							sum += map[loc.x][loc.y - 1];
-						}
-						if (loc.y < MAP_SIZE - 1) {
-							sum += map[loc.x][loc.y + 1];
-						}
-						state[j] = sum / 2.0f;
-					}
-					break;
-				case input_type::BLOCK_FORWARD:
-					if (loc.dir == 0 && loc.y < MAP_SIZE - 1) {
-						state[j] = map[loc.x][loc.y + 1];
-					} else if (loc.dir == 2 && loc.y > 0) {
-						state[j] = map[loc.x][loc.y - 1];
-					} else if (loc.dir == 1 && loc.x < MAP_SIZE - 1) {
-						state[j] = map[loc.x + 1][loc.y];
-					} else if (loc.dir == 3 && loc.x > 0) {
-						state[j] = map[loc.x - 1][loc.y];
-					} else {
-						state[j] = 1;
-					}
-					break;
-				case input_type::LOC_WALL_EW:
-					if (loc.x > MAP_SIZE / 2) {
-						state[j] = 2 - ((loc.x * 2) / (float)MAP_SIZE);
-					} else {
-						state[j] = ((loc.x * 2) / (float)MAP_SIZE);
-					}
-					break;
-				case input_type::LOC_WALL_NS:
-					if (loc.y > MAP_SIZE / 2) {
-						state[j] = 2 - ((loc.y * 2) / (float)MAP_SIZE);
-					} else {
-						state[j] = ((loc.y * 2) / (float)MAP_SIZE);
-					}
-					break;
-				case input_type::POP_DENSITY:
-					sum = 0;
-					if (loc.x - 1 >= 0 && loc.y - 1 >= 0 && loc.x + 1 < MAP_SIZE &&
-							loc.y + 1 < MAP_SIZE) {
-						sum += map[loc.x - 1][loc.y - 1];
-						sum += map[loc.x][loc.y - 1];
-						sum += map[loc.x + 1][loc.y - 1];
-						sum += map[loc.x + 1][loc.y];
-						sum += map[loc.x + 1][loc.y + 1];
-						sum += map[loc.x][loc.y + 1];
-						sum += map[loc.x - 1][loc.y + 1];
-						sum += map[loc.x - 1][loc.y];
-					} else {
-						if (loc.x == 0) {
-							if (loc.y == 0) {
-								sum += map[loc.x + 1][loc.y];
-								sum += map[loc.x + 1][loc.y + 1];
-								sum += map[loc.x][loc.y + 1];
-							} else if (loc.y == MAP_SIZE - 1) {
-								sum += map[loc.x][loc.y - 1];
-								sum += map[loc.x + 1][loc.y - 1];
-								sum += map[loc.x + 1][loc.y];
+	std::for_each(
+			std::execution::par_unseq, cells.begin(), cells.end(), [](Cell &cell) {
+				float state[INPUT_NEURONS] = {0.0f};
+				for (auto j : std::views::iota(0, INPUT_NEURONS)) {
+					input_type input = static_cast<input_type>(j);
+					Coord loc = cell.get_loc();
+					int left = 0, right = 0, front = 0, back = 0;
+					int sum = 0;
+					switch (input) {
+						case input_type::RANDOM:
+							state[j] = (int32_t)(dist(eng) - UINT16_MAX) / (float)INT32_MAX;
+							break;
+						case input_type::OSCILLATOR:
+							state[j] = sin(TIME / 1.0f);
+							break;
+						case input_type::AGE:
+							state[j] = TIME / (float)STEPS;
+							break;
+						case input_type::LOC_X:
+							state[j] = loc.x / (float)MAP_SIZE;
+						case input_type::LOC_Y:
+							state[j] = loc.y / (float)MAP_SIZE;
+						case input_type::BLOCK_LR:
+							sum = 0;
+							if (loc.dir == 0 || loc.dir == 2) {
+								if (loc.x > 0) {
+									sum += map[loc.x - 1][loc.y];
+								}
+								if (loc.x < MAP_SIZE - 1) {
+									sum += map[loc.x + 1][loc.y];
+								}
+								state[j] = sum / 2.0f;
 							} else {
+								if (loc.y > 0) {
+									sum += map[loc.x][loc.y - 1];
+								}
+								if (loc.y < MAP_SIZE - 1) {
+									sum += map[loc.x][loc.y + 1];
+								}
+								state[j] = sum / 2.0f;
+							}
+							break;
+						case input_type::BLOCK_FORWARD:
+							if (loc.dir == 0 && loc.y < MAP_SIZE - 1) {
+								state[j] = map[loc.x][loc.y + 1];
+							} else if (loc.dir == 2 && loc.y > 0) {
+								state[j] = map[loc.x][loc.y - 1];
+							} else if (loc.dir == 1 && loc.x < MAP_SIZE - 1) {
+								state[j] = map[loc.x + 1][loc.y];
+							} else if (loc.dir == 3 && loc.x > 0) {
+								state[j] = map[loc.x - 1][loc.y];
+							} else {
+								state[j] = 1;
+							}
+							break;
+						case input_type::LOC_WALL_EW:
+							if (loc.x > MAP_SIZE / 2) {
+								state[j] = 2 - ((loc.x * 2) / (float)MAP_SIZE);
+							} else {
+								state[j] = ((loc.x * 2) / (float)MAP_SIZE);
+							}
+							break;
+						case input_type::LOC_WALL_NS:
+							if (loc.y > MAP_SIZE / 2) {
+								state[j] = 2 - ((loc.y * 2) / (float)MAP_SIZE);
+							} else {
+								state[j] = ((loc.y * 2) / (float)MAP_SIZE);
+							}
+							break;
+						case input_type::POP_DENSITY:
+							sum = 0;
+							if (loc.x - 1 >= 0 && loc.y - 1 >= 0 && loc.x + 1 < MAP_SIZE &&
+									loc.y + 1 < MAP_SIZE) {
+								sum += map[loc.x - 1][loc.y - 1];
 								sum += map[loc.x][loc.y - 1];
 								sum += map[loc.x + 1][loc.y - 1];
 								sum += map[loc.x + 1][loc.y];
 								sum += map[loc.x + 1][loc.y + 1];
 								sum += map[loc.x][loc.y + 1];
-							}
-						} else if (loc.x == MAP_SIZE - 1) {
-							if (loc.y == 0) {
-								sum += map[loc.x - 1][loc.y];
 								sum += map[loc.x - 1][loc.y + 1];
-								sum += map[loc.x][loc.y + 1];
-							} else if (loc.y == MAP_SIZE - 1) {
-								sum += map[loc.x][loc.y - 1];
-								sum += map[loc.x - 1][loc.y - 1];
 								sum += map[loc.x - 1][loc.y];
 							} else {
-								sum += map[loc.x][loc.y - 1];
-								sum += map[loc.x - 1][loc.y - 1];
-								sum += map[loc.x - 1][loc.y];
-								sum += map[loc.x - 1][loc.y + 1];
-								sum += map[loc.x][loc.y + 1];
+								if (loc.x == 0) {
+									if (loc.y == 0) {
+										sum += map[loc.x + 1][loc.y];
+										sum += map[loc.x + 1][loc.y + 1];
+										sum += map[loc.x][loc.y + 1];
+									} else if (loc.y == MAP_SIZE - 1) {
+										sum += map[loc.x][loc.y - 1];
+										sum += map[loc.x + 1][loc.y - 1];
+										sum += map[loc.x + 1][loc.y];
+									} else {
+										sum += map[loc.x][loc.y - 1];
+										sum += map[loc.x + 1][loc.y - 1];
+										sum += map[loc.x + 1][loc.y];
+										sum += map[loc.x + 1][loc.y + 1];
+										sum += map[loc.x][loc.y + 1];
+									}
+								} else if (loc.x == MAP_SIZE - 1) {
+									if (loc.y == 0) {
+										sum += map[loc.x - 1][loc.y];
+										sum += map[loc.x - 1][loc.y + 1];
+										sum += map[loc.x][loc.y + 1];
+									} else if (loc.y == MAP_SIZE - 1) {
+										sum += map[loc.x][loc.y - 1];
+										sum += map[loc.x - 1][loc.y - 1];
+										sum += map[loc.x - 1][loc.y];
+									} else {
+										sum += map[loc.x][loc.y - 1];
+										sum += map[loc.x - 1][loc.y - 1];
+										sum += map[loc.x - 1][loc.y];
+										sum += map[loc.x - 1][loc.y + 1];
+										sum += map[loc.x][loc.y + 1];
+									}
+								} else {
+									if (loc.y == 0) {
+										sum += map[loc.x - 1][loc.y];
+										sum += map[loc.x - 1][loc.y + 1];
+										sum += map[loc.x][loc.y + 1];
+										sum += map[loc.x + 1][loc.y + 1];
+										sum += map[loc.x + 1][loc.y];
+									} else if (loc.y == MAP_SIZE - 1) {
+										sum += map[loc.x - 1][loc.y];
+										sum += map[loc.x - 1][loc.y - 1];
+										sum += map[loc.x][loc.y - 1];
+										sum += map[loc.x + 1][loc.y - 1];
+										sum += map[loc.x + 1][loc.y];
+									}
+								}
 							}
-						} else {
-							if (loc.y == 0) {
-								sum += map[loc.x - 1][loc.y];
-								sum += map[loc.x - 1][loc.y + 1];
-								sum += map[loc.x][loc.y + 1];
-								sum += map[loc.x + 1][loc.y + 1];
-								sum += map[loc.x + 1][loc.y];
-							} else if (loc.y == MAP_SIZE - 1) {
-								sum += map[loc.x - 1][loc.y];
-								sum += map[loc.x - 1][loc.y - 1];
-								sum += map[loc.x][loc.y - 1];
-								sum += map[loc.x + 1][loc.y - 1];
-								sum += map[loc.x + 1][loc.y];
+							state[j] = sum / 8.0f;
+							break;
+						case input_type::POP_GRADIENT_LR:
+							if (loc.dir == 0) {
+								for (int i = loc.x - 1; i >= 0; i--) {
+									for (int j = 0; j < MAP_SIZE; j++) {
+										left += map[i][j];
+									}
+								}
+								for (int i = loc.x + 1; i < MAP_SIZE; i++) {
+									for (int j = 0; j < MAP_SIZE; j++) {
+										right += map[i][j];
+									}
+								}
+							} else if (loc.dir == 2) {
+								for (int i = loc.x + 1; i >= 0; i--) {
+									for (int j = 0; j < MAP_SIZE; j++) {
+										left += map[i][j];
+									}
+								}
+								for (int i = loc.x - 1; i < MAP_SIZE; i++) {
+									for (int j = 0; j < MAP_SIZE; j++) {
+										right += map[i][j];
+									}
+								}
+							} else if (loc.dir == 1) {
+								for (int i = loc.y + 1; i >= 0; i--) {
+									for (int j = 0; j < MAP_SIZE; j++) {
+										left += map[j][i];
+									}
+								}
+								for (int i = loc.y - 1; i < MAP_SIZE; i++) {
+									for (int j = 0; j < MAP_SIZE; j++) {
+										right += map[j][i];
+									}
+								}
+							} else if (loc.dir == 3) {
+								for (int i = loc.y - 1; i >= 0; i--) {
+									for (int j = 0; j < MAP_SIZE; j++) {
+										left += map[j][i];
+									}
+								}
+								for (int i = loc.y + 1; i < MAP_SIZE; i++) {
+									for (int j = 0; j < MAP_SIZE; j++) {
+										right += map[j][i];
+									}
+								}
 							}
-						}
+							state[j] = (float)(left - right) / POP_SIZE;
+							break;
+						case input_type::POP_GRADIENT_FORWARD:
+							if (loc.dir == 0) {
+								for (int i = loc.y + 1; i >= 0; i--) {
+									for (int j = 0; j < MAP_SIZE; j++) {
+										front += map[i][j];
+									}
+								}
+								for (int i = loc.y - 1; i < MAP_SIZE; i++) {
+									for (int j = 0; j < MAP_SIZE; j++) {
+										back += map[i][j];
+									}
+								}
+							} else if (loc.dir == 2) {
+								for (int i = loc.y - 1; i >= 0; i--) {
+									for (int j = 0; j < MAP_SIZE; j++) {
+										front += map[i][j];
+									}
+								}
+								for (int i = loc.y + 1; i < MAP_SIZE; i++) {
+									for (int j = 0; j < MAP_SIZE; j++) {
+										back += map[i][j];
+									}
+								}
+							} else if (loc.dir == 1) {
+								for (int i = loc.x + 1; i >= 0; i--) {
+									for (int j = 0; j < MAP_SIZE; j++) {
+										front += map[j][i];
+									}
+								}
+								for (int i = loc.x - 1; i < MAP_SIZE; i++) {
+									for (int j = 0; j < MAP_SIZE; j++) {
+										back += map[j][i];
+									}
+								}
+							} else if (loc.dir == 3) {
+								for (int i = loc.x - 1; i >= 0; i--) {
+									for (int j = 0; j < MAP_SIZE; j++) {
+										front += map[j][i];
+									}
+								}
+								for (int i = loc.x + 1; i < MAP_SIZE; i++) {
+									for (int j = 0; j < MAP_SIZE; j++) {
+										back += map[j][i];
+									}
+								}
+							}
+							state[j] = (float)(back - front) / POP_SIZE;
+							break;
 					}
-					state[j] = sum / 8.0f;
-					break;
-				case input_type::POP_GRADIENT_LR:
-					if (loc.dir == 0) {
-						for (int i = loc.x - 1; i >= 0; i--) {
-							for (int j = 0; j < MAP_SIZE; j++) {
-								left += map[i][j];
-							}
-						}
-						for (int i = loc.x + 1; i < MAP_SIZE; i++) {
-							for (int j = 0; j < MAP_SIZE; j++) {
-								right += map[i][j];
-							}
-						}
-					} else if (loc.dir == 2) {
-						for (int i = loc.x + 1; i >= 0; i--) {
-							for (int j = 0; j < MAP_SIZE; j++) {
-								left += map[i][j];
-							}
-						}
-						for (int i = loc.x - 1; i < MAP_SIZE; i++) {
-							for (int j = 0; j < MAP_SIZE; j++) {
-								right += map[i][j];
-							}
-						}
-					} else if (loc.dir == 1) {
-						for (int i = loc.y + 1; i >= 0; i--) {
-							for (int j = 0; j < MAP_SIZE; j++) {
-								left += map[j][i];
-							}
-						}
-						for (int i = loc.y - 1; i < MAP_SIZE; i++) {
-							for (int j = 0; j < MAP_SIZE; j++) {
-								right += map[j][i];
-							}
-						}
-					} else if (loc.dir == 3) {
-						for (int i = loc.y - 1; i >= 0; i--) {
-							for (int j = 0; j < MAP_SIZE; j++) {
-								left += map[j][i];
-							}
-						}
-						for (int i = loc.y + 1; i < MAP_SIZE; i++) {
-							for (int j = 0; j < MAP_SIZE; j++) {
-								right += map[j][i];
-							}
-						}
-					}
-					state[j] = (float)(left - right) / POP_SIZE;
-					break;
-				case input_type::POP_GRADIENT_FORWARD:
-					if (loc.dir == 0) {
-						for (int i = loc.y + 1; i >= 0; i--) {
-							for (int j = 0; j < MAP_SIZE; j++) {
-								front += map[i][j];
-							}
-						}
-						for (int i = loc.y - 1; i < MAP_SIZE; i++) {
-							for (int j = 0; j < MAP_SIZE; j++) {
-								back += map[i][j];
-							}
-						}
-					} else if (loc.dir == 2) {
-						for (int i = loc.y - 1; i >= 0; i--) {
-							for (int j = 0; j < MAP_SIZE; j++) {
-								front += map[i][j];
-							}
-						}
-						for (int i = loc.y + 1; i < MAP_SIZE; i++) {
-							for (int j = 0; j < MAP_SIZE; j++) {
-								back += map[i][j];
-							}
-						}
-					} else if (loc.dir == 1) {
-						for (int i = loc.x + 1; i >= 0; i--) {
-							for (int j = 0; j < MAP_SIZE; j++) {
-								front += map[j][i];
-							}
-						}
-						for (int i = loc.x - 1; i < MAP_SIZE; i++) {
-							for (int j = 0; j < MAP_SIZE; j++) {
-								back += map[j][i];
-							}
-						}
-					} else if (loc.dir == 3) {
-						for (int i = loc.x - 1; i >= 0; i--) {
-							for (int j = 0; j < MAP_SIZE; j++) {
-								front += map[j][i];
-							}
-						}
-						for (int i = loc.x + 1; i < MAP_SIZE; i++) {
-							for (int j = 0; j < MAP_SIZE; j++) {
-								back += map[j][i];
-							}
-						}
-					}
-					state[j] = (float)(back - front) / POP_SIZE;
-					break;
-			}
-		}
-		cells[i].update_state(state);
-	}
+				}
+				cell.update_state(state);
+			});
 }
 
 int main() {
@@ -515,28 +516,57 @@ int main() {
 
 	print_map(map);
 
-	float acc = 0;
+	float acc = 0, last_10_sum = 0, max = 0;
+	std::vector<float> last_10;
+	last_10.reserve(10);
+	std::chrono::duration<double> elapsed, elapsed_10;
+	std::vector<std::chrono::duration<double>> last_10_elapsed;
+	last_10_elapsed.reserve(10);
+	int gen = 0;
 	do {
 		TIME = 0;
+		std::chrono::high_resolution_clock::time_point begin =
+				std::chrono::high_resolution_clock::now();
+		for (auto i : std::views::iota(0, MAP_SIZE)) {
+			for (auto j : std::views::iota(0, MAP_SIZE)) {
+				map[i][j] = 0;
+			}
+		}
 		do {
-			std::cout << "TIME: " << TIME << std::endl;
-			// std::this_thread::sleep_for(std::chrono::milliseconds(10));
-
 			update_state(cells);
 			for (auto i : std::views::iota(0, POP_SIZE)) {
 				uint8_t d = cells[i].step();
 				cells[i].move(d);
 			}
 
-			print_map(map);
+			// std::cout << "TIME: " << TIME << "\r" << std::flush;
+
 			TIME++;
 		} while (TIME < STEPS);
 
+		if (gen % 4 == 0) {
+			std::cout << "\E[H\E[J";
+			std::cout << "GEN: " << gen << "\n";
+			std::cout << "ACC: " << acc << " MAX: " << max
+								<< " LAST 10 AVG: " << last_10_sum / 10 << "\n";
+			std::cout << "CLOCK: " << elapsed.count()
+								<< " LAST 10 AVG: " << elapsed_10.count() / 10 << "\n\n";
+			// print_map(map);
+		}
+
 		const auto [ret, last] = std::ranges::remove_if(
-				cells, [](Cell c) { return c.get_loc().x < (MAP_SIZE / 2); });
+				cells, [](Cell c) { return c.get_loc().x < (2 * MAP_SIZE / 3); });
 		const auto valid = std::ranges::distance(cells.begin(), ret);
 		acc = (float)valid / POP_SIZE;
-		std::cout << "ACC: " << acc << std::endl;
+		if (acc > max) {
+			max = acc;
+		}
+		if (last_10.size() == 10) {
+			last_10_sum -= last_10[0];
+			last_10.erase(last_10.begin());
+		}
+		last_10_sum += acc;
+		last_10.push_back(acc);
 
 		std::vector<std::array<gene, GENOME_SIZE>> new_genes;
 		for (auto cell = cells.begin(); cell != ret; cell++) {
@@ -545,7 +575,29 @@ int main() {
 		std::ranges::shuffle(new_genes, eng);
 
 		size_t child_num = ceil(POP_SIZE / (acc / 2));
-		size_t index = 0;
+		std::vector<std::array<gene, GENOME_SIZE>> children;
+		for (auto i = 0; i < valid; i += 2) {
+			auto g1 = new_genes[i], g2 = new_genes[i + 1];
+			std::array<gene, GENOME_SIZE * 2> box;
+			std::ranges::copy(g1, box.begin());
+			std::ranges::copy(g2, box.begin() + GENOME_SIZE);
+			for (auto j = 0; j < child_num; j++) {
+				std::ranges::shuffle(box, eng);
+				std::array<gene, GENOME_SIZE> child;
+				std::ranges::copy(box.begin(), box.begin() + GENOME_SIZE,
+													child.begin());
+				children.push_back(child);
+			}
+		}
+
+		std::ranges::shuffle(children, eng);
+		std::array<std::array<gene, GENOME_SIZE>, POP_SIZE> new_pop;
+		std::ranges::copy(children.begin(), children.begin() + POP_SIZE,
+											new_pop.begin());
+		for (auto i : std::views::iota(0, POP_SIZE)) {
+			cells[i].set_genome(new_pop[i]);
+		}
+		/* size_t index = 0;
 		for (auto i = 0; i < valid; i += 2) {
 			auto g1 = new_genes[i], g2 = new_genes[i + 1];
 			std::array<gene, GENOME_SIZE * 2> box;
@@ -570,7 +622,15 @@ int main() {
 				cells[index].set_genome(child);
 				index++;
 			}
+		} */
+		gen++;
+		elapsed = std::chrono::high_resolution_clock::now() - begin;
+		if (last_10_elapsed.size() == 10) {
+			elapsed_10 -= last_10_elapsed[0];
+			last_10_elapsed.erase(last_10_elapsed.begin());
 		}
+		elapsed_10 += elapsed;
+		last_10_elapsed.push_back(elapsed);
 	} while (acc < 0.8);
 
 	return 0;
