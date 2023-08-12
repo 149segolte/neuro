@@ -1,145 +1,210 @@
 use leptos::*;
 use rand::distributions::{Distribution, Uniform};
-use std::collections::HashMap;
+use rand::Rng;
+use std::collections::{HashMap, HashSet};
+use wasm_bindgen::JsCast;
+use web_sys::CanvasRenderingContext2d;
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Connection {
+    from: u8,
+    to: u8,
+    weight: f32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 struct Cell {
-    genome: [u8; 8],
+    genome: Vec<Connection>,
     state: u8,
 }
 
+#[derive(Debug, Clone)]
 struct World {
-    size: u8,
-    population: HashMap<(u8, u8), Cell>,
-    rng: rand::rngs::ThreadRng,
+    population: HashMap<(u16, u16), Cell>,
 }
 
 impl World {
-    fn new(size: u8, pop_percent: u16) -> Self {
+    fn new(state: &Render) -> Self {
         let mut rng = rand::thread_rng();
-        let coord = Uniform::from(0..size);
-        let mut population = HashMap::new();
-        let pop_size = (size as u16 * size as u16) * pop_percent / 100;
-        let pop_size = 2u16.pow((pop_size as f32).log2().ceil() as u32);
+        let size_dist = Uniform::from(0..state.world_size);
+        let pop_size = ((state.world_size as u32).pow(2) as f32 * state.pop_percent) as usize;
 
-        for _ in 0..pop_size {
-            loop {
-                let x = coord.sample(&mut rng);
-                let y = coord.sample(&mut rng);
-                if !population.contains_key(&(x, y)) {
-                    population.insert(
-                        (x, y),
-                        Cell {
-                            genome: rand::random::<[u8; 8]>(),
-                            state: 0,
-                        },
-                    );
-                    break;
-                }
+        debug_warn!("pop_size: {}", pop_size);
+
+        let mut coords = HashSet::with_capacity(pop_size);
+        while coords.len() < pop_size {
+            coords.insert((size_dist.sample(&mut rng), size_dist.sample(&mut rng)));
+        }
+
+        debug_warn!(
+            "coords: {:?}, sample: {:?}",
+            coords.len(),
+            coords.iter().next()
+        );
+
+        let mut population = HashMap::with_capacity(pop_size);
+        for (x, y) in coords {
+            let mut genome = Vec::with_capacity(state.genome_size as usize);
+            for _ in 0..state.genome_size {
+                genome.push(valid_connection(state));
             }
+
+            population.insert((x, y), Cell { genome, state: 0 });
         }
-        Self {
-            size,
-            population,
-            rng,
-        }
+
+        Self { population }
+    }
+}
+
+fn valid_connection(state: &Render) -> Connection {
+    let mut rng = rand::thread_rng();
+    let rand_num: u32 = rng.gen();
+    let from = (rand_num >> 24) as u8;
+    let to = ((rand_num >> 16) & 0xFF) as u8;
+    let weight = (((rand_num << 16) & 0xFFFF0000) >> 16) as i16;
+
+    Connection {
+        from,
+        to,
+        weight: weight as f32 / state.scale_factor as f32,
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-struct RenderState {
-    world_size: u8,
-    pop_size: u16,
-    time_step: u16,
+struct Render {
+    world_size: u16,
+    pop_percent: f32,
+    time_steps: u16,
     genome_size: u8,
     mutation_rate: f32,
+    input_states: u8,
     inner_states: u8,
+    output_states: u8,
     scale_factor: usize,
 }
 
-impl Default for RenderState {
+impl Default for Render {
     fn default() -> Self {
         Self {
             world_size: 32,
-            pop_size: 128,
-            time_step: 32,
+            pop_percent: 0.2,
+            time_steps: 32,
             genome_size: 1,
             mutation_rate: 0.01,
+            input_states: 2,
             inner_states: 2,
+            output_states: 2,
             scale_factor: 16384,
         }
+    }
+}
+
+fn display_world(state: &Render, world: World, canvas: NodeRef<leptos::html::Canvas>) {
+    let canvas = canvas.get().unwrap();
+    canvas.set_width(state.world_size as u32);
+    canvas.set_height(state.world_size as u32);
+
+    let ctx = canvas
+        .get_context("2d")
+        .unwrap()
+        .unwrap()
+        .dyn_into::<CanvasRenderingContext2d>()
+        .unwrap();
+    ctx.set_fill_style(&"#000000".into());
+    ctx.fill_rect(0.0, 0.0, state.world_size as f64, state.world_size as f64);
+
+    for ((x, y), cell) in &world.population {
+        let color = match cell.state {
+            0 => "#000000",
+            1 => "#FF0000",
+            2 => "#00FF00",
+            3 => "#0000FF",
+            _ => "#FFFFFF",
+        };
+
+        ctx.set_fill_style(&color.into());
+        ctx.fill_rect(*x as f64, *y as f64, 1.0, 1.0);
     }
 }
 
 fn main() {
     mount_to_body(|cx| {
         let (canvas_size, _set_canvas_size) = create_signal(cx, 720);
-        let (world_size, _set_world_size) = create_signal(cx, 128);
-        let (pop_size, _set_pop_size) = create_signal(cx, 20);
-        let (time_step, _set_time_step) = create_signal(cx, 256);
-        let (genome_size, _set_genome_size) = create_signal(cx, 4);
-        let (mutation_rate, _set_mutation_rate) = create_signal(cx, 0.01);
-        let (inner_states, _set_inner_states) = create_signal(cx, 4);
-        let scale_factor = 8192;
+        let (state, set_state) = create_signal(cx, Render::default());
+        set_state(Render {
+            world_size: 128,
+            pop_percent: 0.2,
+            time_steps: 256,
+            genome_size: 4,
+            mutation_rate: 0.01,
+            input_states: 11,
+            inner_states: 4,
+            output_states: 4,
+            scale_factor: 8192,
+        });
 
-        let (state, set_state) = create_signal(cx, RenderState::default());
-        let world: Option<World> = None;
+        let (render, set_render) = create_signal(cx, Render::default());
+        let mut world: Option<World> = None;
 
         let compute_state = create_memo(cx, move |_| {
-            let curr = RenderState {
-                world_size: world_size.get(),
-                pop_size: pop_size.get(),
-                time_step: time_step.get(),
-                genome_size: genome_size.get(),
-                mutation_rate: mutation_rate.get(),
-                inner_states: inner_states.get(),
-                scale_factor,
-            };
-
-            return curr == state();
+            return render() == state();
         });
 
         let canvas_ref = create_node_ref::<leptos::html::Canvas>(cx);
 
         let compute = move |_| {
-            set_state(RenderState {
-                world_size: world_size.get(),
-                pop_size: pop_size.get(),
-                time_step: time_step.get(),
-                genome_size: genome_size.get(),
-                mutation_rate: mutation_rate.get(),
-                inner_states: inner_states.get(),
-                scale_factor,
-            });
+            set_render(state());
+            let state = state();
+
+            debug_warn!("state: {:?}", state);
 
             let console = document().get_element_by_id("console").unwrap();
             console.class_list().remove_1("hidden").unwrap();
-            let log = document().get_element_by_id("log").unwrap();
+            let logger = document().get_element_by_id("log").unwrap();
+            let log = |msg: &str| {
+                logger
+                    .append_child(&document().create_text_node(msg))
+                    .unwrap();
+                logger
+                    .append_child(&document().create_element("br").unwrap())
+                    .unwrap();
+            };
 
-            log.append_child(
-                &document().create_text_node(
-                    format!(
-                        "Loading a world of size {size}x{size}...",
-                        size = state.get().world_size
-                    )
-                    .as_str(),
-                ),
+            log(format!(
+                "Loading a world of size {size}x{size}...",
+                size = state.world_size
             )
-            .unwrap();
+            .as_str());
 
-            let mut world = World::new(state.get().world_size, state.get().pop_size);
+            world = Some(World::new(&state));
+
+            log("World created!");
+            unimplemented!();
+
+            display_world(&state, world.clone().unwrap(), canvas_ref);
+
+            log("World loaded!");
+
+            console.class_list().add_1("hidden").unwrap();
         };
 
         view! { cx,
             <div class="bg-green-50 w-screen h-screen font-sans flex flex-col items-center">
                 <p class="pt-8 text-4xl font-sans font-bold">"Welcome to Neuro!"</p>
                 <p class="text-2xl font-sans">"This is a generational, artificial neural network experiment."</p>
-                <div class="container grid grid-cols-2 gap-8 my-auto">
-                    <div class="h-auto flex flex-col gap-4 justify-center items-center">
+                <div class="container grid grid-cols-1 lg:grid-cols-2 gap-8 my-auto">
+                    <div class="h-auto pt-8 lg:pt-0 flex flex-col gap-4 justify-center items-center">
                         <div class="w-full flex items-center">
                             <label for="size" class="text-2xl whitespace-nowrap">"World Size : "</label>
 
                             <div class="w-full ml-2 flex flex-col justify-between">
-                                <input id="size" type="range" min="32" max="256" step="32" list="ticks_world" value=world_size prop:value=world_size />
+                                <input id="size" type="range" min="32" max="256" step="32" list="ticks_world"
+                                    on:input=move |ev| {
+                                        set_state.update(|state| {
+                                            state.world_size = event_target_value(&ev).parse::<u16>().unwrap();
+                                        });
+                                    }
+                                    prop:value=move || state.with(|state| state.world_size) />
                                 <datalist id="ticks_world" class="ticks flex flex-col justify-between">
                                     <option value="32" label="32"></option>
                                     <option value="64" label="64"></option>
@@ -157,17 +222,23 @@ fn main() {
                             <label for="population" class="text-2xl whitespace-nowrap">"Population : "</label>
 
                             <div class="w-full ml-2 flex flex-col justify-between">
-                                <input id="population" type="range" min="10" max="90" step="10" list="ticks_pop" value=pop_size prop:value=pop_size />
+                                <input id="population" type="range" min="0.1" max="0.9" step="0.1" list="ticks_pop"
+                                    on:input=move |ev| {
+                                        set_state.update(|state| {
+                                            state.pop_percent = event_target_value(&ev).parse::<f32>().unwrap();
+                                        });
+                                    }
+                                    prop:value=move || state.with(|state| state.pop_percent) />
                                 <datalist id="ticks_pop" class="ticks flex flex-col justify-between">
-                                    <option value="10" label="10%"></option>
-                                    <option value="20" label="20%"></option>
-                                    <option value="30" label="30%"></option>
-                                    <option value="40" label="40%"></option>
-                                    <option value="50" label="50%"></option>
-                                    <option value="60" label="60%"></option>
-                                    <option value="70" label="70%"></option>
-                                    <option value="80" label="80%"></option>
-                                    <option value="90" label="90%"></option>
+                                    <option value="0.1" label="10%"></option>
+                                    <option value="0.2" label="20%"></option>
+                                    <option value="0.3" label="30%"></option>
+                                    <option value="0.4" label="40%"></option>
+                                    <option value="0.5" label="50%"></option>
+                                    <option value="0.6" label="60%"></option>
+                                    <option value="0.7" label="70%"></option>
+                                    <option value="0.8" label="80%"></option>
+                                    <option value="0.9" label="90%"></option>
                                 </datalist>
                             </div>
                         </div>
@@ -176,7 +247,13 @@ fn main() {
                             <label for="time" class="text-2xl whitespace-nowrap">"Time steps : "</label>
 
                             <div class="w-full ml-2 flex flex-col justify-between">
-                                <input id="time" type="range" min="64" max="512" step="64" list="ticks_time" value=time_step prop:value=time_step />
+                                <input id="time" type="range" min="64" max="512" step="64" list="ticks_time"
+                                    on:input=move |ev| {
+                                        set_state.update(|state| {
+                                            state.time_steps = event_target_value(&ev).parse::<u16>().unwrap();
+                                        });
+                                    }
+                                    prop:value=move || state.with(|state| state.time_steps) />
                                 <datalist id="ticks_time" class="ticks flex flex-col justify-between">
                                     <option value="64" label="64"></option>
                                     <option value="128" label="128"></option>

@@ -1,4 +1,4 @@
 [[hooks]]
 stage = "pre_build"
-command = "pwsh"
-command_arguments = ["-c", "tailwindcss -i style\\main.css -o style\\output.css"]
+command = "sh"
+command_arguments = ["-c", "tailwindcss -i style/main.css -o style/output.css"]

@@ -646,8 +646,8 @@ video {
   width: 100vw;
 }
 
-.grid-cols-2 {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+.grid-cols-1 {
+  grid-template-columns: repeat(1, minmax(0, 1fr));
 }
 
 .flex-col {
@@ -794,4 +794,14 @@ video {
 
 .disabled\:opacity-80:disabled {
   opacity: 0.8;
+}
+
+@media (min-width: 1024px) {
+  .lg\:grid-cols-2 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .lg\:pt-0 {
+    padding-top: 0px;
+  }
 }
