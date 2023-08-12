@@ -58,15 +58,29 @@ impl World {
 
 fn valid_connection(state: &Render) -> Connection {
     let mut rng = rand::thread_rng();
-    let rand_num: u32 = rng.gen();
-    let from = (rand_num >> 24) as u8;
-    let to = ((rand_num >> 16) & 0xFF) as u8;
-    let weight = (((rand_num << 16) & 0xFFFF0000) >> 16) as i16;
+    let in_type: bool = rng.gen();
+    let mut from: u8;
+    if in_type {
+        from = rng.gen_range(0..state.input_states);
+    } else {
+        from = rng.gen_range(0..state.inner_states);
+        from |= 0b1000_0000;
+    }
+    let out_type: bool = rng.gen();
+    let mut to: u8;
+    if out_type {
+        to = rng.gen_range(0..state.output_states);
+    } else {
+        to = rng.gen_range(0..state.inner_states);
+        to |= 0b1000_0000;
+    }
+    let weight: f32 =
+        rng.gen_range((0.0 - state.weight_factor as f32)..(state.weight_factor as f32));
 
     Connection {
         from,
         to,
-        weight: weight as f32 / state.scale_factor as f32,
+        weight: weight as f32 / state.weight_factor as f32,
     }
 }
 
@@ -80,7 +94,7 @@ struct Render {
     input_states: u8,
     inner_states: u8,
     output_states: u8,
-    scale_factor: usize,
+    weight_factor: u8,
 }
 
 impl Default for Render {
@@ -94,36 +108,32 @@ impl Default for Render {
             input_states: 2,
             inner_states: 2,
             output_states: 2,
-            scale_factor: 16384,
+            weight_factor: 4,
         }
     }
 }
 
 fn display_world(state: &Render, world: World, canvas: NodeRef<leptos::html::Canvas>) {
     let canvas = canvas.get().unwrap();
-    canvas.set_width(state.world_size as u32);
-    canvas.set_height(state.world_size as u32);
-
     let ctx = canvas
         .get_context("2d")
         .unwrap()
         .unwrap()
         .dyn_into::<CanvasRenderingContext2d>()
         .unwrap();
-    ctx.set_fill_style(&"#000000".into());
-    ctx.fill_rect(0.0, 0.0, state.world_size as f64, state.world_size as f64);
+    ctx.clear_rect(0.0, 0.0, canvas.width() as f64, canvas.height() as f64);
 
-    for ((x, y), cell) in &world.population {
-        let color = match cell.state {
-            0 => "#000000",
-            1 => "#FF0000",
-            2 => "#00FF00",
-            3 => "#0000FF",
-            _ => "#FFFFFF",
-        };
+    let pixel = move |x: u16, y: u16| {
+        ctx.fill_rect(
+            x as f64 * canvas.width() as f64 / state.world_size as f64,
+            y as f64 * canvas.height() as f64 / state.world_size as f64,
+            canvas.width() as f64 / state.world_size as f64,
+            canvas.height() as f64 / state.world_size as f64,
+        );
+    };
 
-        ctx.set_fill_style(&color.into());
-        ctx.fill_rect(*x as f64, *y as f64, 1.0, 1.0);
+    for (coord, _cell) in world.population {
+        pixel(coord.0, coord.1);
     }
 }
 
@@ -140,11 +150,10 @@ fn main() {
             input_states: 11,
             inner_states: 4,
             output_states: 4,
-            scale_factor: 8192,
+            weight_factor: 4,
         });
 
         let (render, set_render) = create_signal(cx, Render::default());
-        let mut world: Option<World> = None;
 
         let compute_state = create_memo(cx, move |_| {
             return render() == state();
@@ -176,14 +185,13 @@ fn main() {
             )
             .as_str());
 
-            world = Some(World::new(&state));
-
-            log("World created!");
-            unimplemented!();
-
-            display_world(&state, world.clone().unwrap(), canvas_ref);
+            let world = World::new(&state);
 
             log("World loaded!");
+
+            display_world(&state, world.clone(), canvas_ref);
+
+            log("Starting simulation...");
 
             console.class_list().add_1("hidden").unwrap();
         };
