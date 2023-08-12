@@ -2,6 +2,7 @@ use leptos::*;
 use rand::distributions::{Distribution, Uniform};
 use rand::Rng;
 use std::collections::{HashMap, HashSet};
+use strum::{EnumCount, FromRepr};
 use wasm_bindgen::JsCast;
 use web_sys::CanvasRenderingContext2d;
 
@@ -12,14 +13,105 @@ struct Connection {
     weight: f32,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EnumCount, FromRepr)]
+enum Input {
+    Random = 0,
+    Oscillator,
+    Age,
+    BlockLR,
+    BlockForward,
+    BlockForwardLong,
+    LocX,
+    LocY,
+    LastMoveX,
+    LastMoveY,
+    LocWallNS,
+    LocWallEW,
+    NearestWall,
+    PopDensity,
+    // PopGradientLR,
+    // PopGradientForward,
+    // PopGradientForwardLong,
+    // GeneMatchForward,
+    // PheromoneDensity,
+    // PheromoneGradientLR,
+    // PheromoneGradientForward,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EnumCount, FromRepr)]
+enum Output {
+    MoveForward = 0,
+    MoveRandom,
+    MoveReverse,
+    MoveLR,
+    MoveEW,
+    MoveNS,
+    // SetProbeDistance,
+    // SetOscillator,
+    // SetResponsive,
+    // EmitPheromone,
+    // KillForward,
+}
+
+const INNER_STATES: u8 = 4;
+
+#[derive(Debug, Clone)]
 struct Cell {
     genome: Vec<Connection>,
-    state: u8,
+    state: HashMap<Input, f32>,
+    brain: HashMap<u8, f32>,
+    output: HashMap<Output, f32>,
+}
+
+impl Cell {
+    fn new(genome: Vec<Connection>) -> Self {
+        let mut state = HashMap::new();
+        let mut brain = HashMap::new();
+        let mut output = HashMap::new();
+
+        for gene in genome.iter() {
+            let in_type = gene.from & 0b1000_0000;
+            let from = gene.from & 0b0111_1111;
+            let out_type = gene.to & 0b1000_0000;
+            let to = gene.to & 0b0111_1111;
+
+            if in_type == 0 {
+                state.insert(Input::from_repr(from as usize).unwrap(), 0.0);
+            } else {
+                brain.insert(from, 0.0);
+            }
+
+            if out_type == 0 {
+                output.insert(Output::from_repr(to as usize).unwrap(), 0.0);
+            } else {
+                brain.insert(to, 0.0);
+            }
+        }
+
+        Self {
+            genome,
+            state,
+            brain,
+            output,
+        }
+    }
+
+    fn update(&mut self, grid: &Vec<Vec<bool>>) {
+        todo!()
+    }
+
+    fn calc(&mut self) {
+        todo!()
+    }
+
+    fn intention(&self) -> u8 {
+        todo!()
+    }
 }
 
 #[derive(Debug, Clone)]
 struct World {
+    state: Render,
     population: HashMap<(u16, u16), Cell>,
 }
 
@@ -49,10 +141,62 @@ impl World {
                 genome.push(valid_connection(state));
             }
 
-            population.insert((x, y), Cell { genome, state: 0 });
+            population.insert((x, y), Cell::new(genome));
         }
 
-        Self { population }
+        Self {
+            state: state.clone(),
+            population,
+        }
+    }
+
+    fn get_map(&self) -> Vec<(u16, u16)> {
+        self.population.keys().copied().collect()
+    }
+
+    fn step(&mut self) {
+        let mut grid = Vec::with_capacity(self.state.world_size as usize);
+        for _ in 0..self.state.world_size {
+            grid.push(vec![false; self.state.world_size as usize]);
+        }
+
+        for (coord, _) in &self.population {
+            grid[coord.0 as usize][coord.1 as usize] = true;
+        }
+
+        let slice = self.population.keys().cloned().collect::<Vec<_>>();
+
+        slice.iter().for_each(|coord| {
+            let cell = self.population.get_mut(coord).unwrap();
+            cell.update(&grid);
+            cell.calc();
+
+            let new_coord: (i16, i16) = match cell.intention() {
+                0 => (coord.0 as i16, coord.1 as i16 - 1),
+                1 => (coord.0 as i16 + 1, coord.1 as i16),
+                2 => (coord.0 as i16, coord.1 as i16 + 1),
+                3 => (coord.0 as i16 - 1, coord.1 as i16),
+                _ => panic!("Invalid move: {}", cell.intention()),
+            };
+
+            if new_coord.0 < 0
+                || new_coord.0 >= self.state.world_size as i16
+                || new_coord.1 < 0
+                || new_coord.1 >= self.state.world_size as i16
+            {
+                return;
+            }
+
+            let new_coord = (new_coord.0 as u16, new_coord.1 as u16);
+
+            if self.population.contains_key(&new_coord) {
+                return;
+            }
+
+            if let Some(cell) = self.population.remove(coord) {
+                self.population.insert(new_coord, cell);
+            }
+        });
     }
 }
 
@@ -61,17 +205,17 @@ fn valid_connection(state: &Render) -> Connection {
     let in_type: bool = rng.gen();
     let mut from: u8;
     if in_type {
-        from = rng.gen_range(0..state.input_states);
+        from = rng.gen_range(0..Input::COUNT as u8);
     } else {
-        from = rng.gen_range(0..state.inner_states);
+        from = rng.gen_range(0..INNER_STATES);
         from |= 0b1000_0000;
     }
     let out_type: bool = rng.gen();
     let mut to: u8;
     if out_type {
-        to = rng.gen_range(0..state.output_states);
+        to = rng.gen_range(0..Output::COUNT as u8);
     } else {
-        to = rng.gen_range(0..state.inner_states);
+        to = rng.gen_range(0..INNER_STATES);
         to |= 0b1000_0000;
     }
     let weight: f32 =
@@ -91,9 +235,6 @@ struct Render {
     time_steps: u16,
     genome_size: u8,
     mutation_rate: f32,
-    input_states: u8,
-    inner_states: u8,
-    output_states: u8,
     weight_factor: u8,
 }
 
@@ -105,15 +246,12 @@ impl Default for Render {
             time_steps: 32,
             genome_size: 1,
             mutation_rate: 0.01,
-            input_states: 2,
-            inner_states: 2,
-            output_states: 2,
             weight_factor: 4,
         }
     }
 }
 
-fn display_world(state: &Render, world: World, canvas: NodeRef<leptos::html::Canvas>) {
+fn display_world(state: &Render, map: Vec<(u16, u16)>, canvas: NodeRef<leptos::html::Canvas>) {
     let canvas = canvas.get().unwrap();
     let ctx = canvas
         .get_context("2d")
@@ -132,7 +270,7 @@ fn display_world(state: &Render, world: World, canvas: NodeRef<leptos::html::Can
         );
     };
 
-    for (coord, _cell) in world.population {
+    for coord in map {
         pixel(coord.0, coord.1);
     }
 }
@@ -140,6 +278,7 @@ fn display_world(state: &Render, world: World, canvas: NodeRef<leptos::html::Can
 fn main() {
     mount_to_body(|cx| {
         let (canvas_size, _set_canvas_size) = create_signal(cx, 720);
+
         let (state, set_state) = create_signal(cx, Render::default());
         set_state(Render {
             world_size: 128,
@@ -147,9 +286,6 @@ fn main() {
             time_steps: 256,
             genome_size: 4,
             mutation_rate: 0.01,
-            input_states: 11,
-            inner_states: 4,
-            output_states: 4,
             weight_factor: 4,
         });
 
@@ -185,22 +321,29 @@ fn main() {
             )
             .as_str());
 
-            let world = World::new(&state);
+            let mut world = World::new(&state);
 
             log("World loaded!");
 
-            display_world(&state, world.clone(), canvas_ref);
+            display_world(&state, world.get_map(), canvas_ref);
 
             log("Starting simulation...");
 
             console.class_list().add_1("hidden").unwrap();
+
+            for _ in 0..state.time_steps {
+                world.step();
+                display_world(&state, world.get_map(), canvas_ref);
+            }
+
+            log("Simulation complete!");
         };
 
         view! { cx,
-            <div class="bg-green-50 w-screen h-screen font-sans flex flex-col items-center">
+            <div class="w-screen h-screen font-sans flex flex-col items-center justify-center md:justify-normal">
                 <p class="pt-8 text-4xl font-sans font-bold">"Welcome to Neuro!"</p>
                 <p class="text-2xl font-sans">"This is a generational, artificial neural network experiment."</p>
-                <div class="container grid grid-cols-1 lg:grid-cols-2 gap-8 my-auto">
+                <div class="container grid grid-cols-1 lg:grid-cols-2 gap-8 lg:my-auto">
                     <div class="h-auto pt-8 lg:pt-0 flex flex-col gap-4 justify-center items-center">
                         <div class="w-full flex items-center">
                             <label for="size" class="text-2xl whitespace-nowrap">"World Size : "</label>
@@ -282,7 +425,7 @@ fn main() {
                         </button>
                     </div>
 
-                    <div class="relative aspect-square border shadow-2xl rounded-lg overflow-hidden">
+                    <div class="relative mb-8 lg:m-0 aspect-square border shadow-2xl rounded-lg overflow-hidden">
                         <div id="console" class="absolute top-0 left-0 z-10 w-full h-full bg-neutral-900 text-neutral-100 text-md hidden">
                             <div id="log" class="m-16"></div>
                         </div>
