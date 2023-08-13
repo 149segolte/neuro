@@ -105,6 +105,80 @@ impl Direction {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct Coord {
+    x: u16,
+    y: u16,
+}
+
+impl Coord {
+    fn new(x: u16, y: u16) -> Self {
+        Self { x, y }
+    }
+
+    fn neighbour(&self, bound: (u16, u16), direction: Direction) -> Option<Self> {
+        match direction {
+            Direction::North => {
+                if self.y == bound.1 - 1 {
+                    None
+                } else {
+                    Some(Self::new(self.x, self.y + 1))
+                }
+            }
+            Direction::East => {
+                if self.x == bound.0 - 1 {
+                    None
+                } else {
+                    Some(Self::new(self.x + 1, self.y))
+                }
+            }
+            Direction::South => {
+                if self.y == 0 {
+                    None
+                } else {
+                    Some(Self::new(self.x, self.y - 1))
+                }
+            }
+            Direction::West => {
+                if self.x == 0 {
+                    None
+                } else {
+                    Some(Self::new(self.x - 1, self.y))
+                }
+            }
+        }
+    }
+
+    fn neighbours(&self, bound: (u16, u16)) -> Vec<Self> {
+        let mut neighbours = Vec::new();
+        if let Some(neighbour) = self.neighbour(bound, Direction::North) {
+            neighbours.push(neighbour);
+            if let Some(neighbour) = neighbour.neighbour(bound, Direction::East) {
+                neighbours.push(neighbour);
+            }
+            if let Some(neighbour) = neighbour.neighbour(bound, Direction::West) {
+                neighbours.push(neighbour);
+            }
+        }
+        if let Some(neighbour) = self.neighbour(bound, Direction::East) {
+            neighbours.push(neighbour);
+        }
+        if let Some(neighbour) = self.neighbour(bound, Direction::South) {
+            neighbours.push(neighbour);
+            if let Some(neighbour) = neighbour.neighbour(bound, Direction::East) {
+                neighbours.push(neighbour);
+            }
+            if let Some(neighbour) = neighbour.neighbour(bound, Direction::West) {
+                neighbours.push(neighbour);
+            }
+        }
+        if let Some(neighbour) = self.neighbour(bound, Direction::West) {
+            neighbours.push(neighbour);
+        }
+        neighbours
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Intention {
     direction: Direction,
@@ -123,6 +197,7 @@ struct Cell {
     intermidiate: HashMap<Inner, (Vec<(FromConn, f32)>, f32)>,
     result: HashMap<Output, (Vec<(FromConn, f32)>, f32)>,
     facing: Direction,
+    last_move: (u16, u16),
 }
 
 impl Cell {
@@ -163,30 +238,118 @@ impl Cell {
             intermidiate,
             result,
             facing: Direction::from_repr(rand::thread_rng().gen_range(0..4)).unwrap(),
+            last_move: (0, 0),
         }
     }
 
-    fn set_direction(&mut self, direction: Direction) {
-        self.facing = direction;
+    fn try_move(&mut self, direction: Option<Direction>) {
+        match direction {
+            Some(dir) => {
+                match dir {
+                    Direction::North | Direction::South => {
+                        self.last_move.0 += 1;
+                        self.last_move.1 = 0;
+                    }
+                    Direction::East | Direction::West => {
+                        self.last_move.0 = 0;
+                        self.last_move.1 += 1;
+                    }
+                };
+                self.facing = dir;
+            }
+            _ => {
+                self.last_move.0 += 1;
+                self.last_move.1 += 1;
+            }
+        }
     }
 
-    fn update(&mut self, grid: &Vec<Vec<bool>>) {
+    fn update(&mut self, grid: &Vec<Vec<bool>>, time: f32, coord: Coord) {
         self.state.iter_mut().for_each(|(input, value)| {
             *value = match input {
-                Input::Random => rand::thread_rng().gen::<f32>(),
-                Input::Oscillator => todo!(),
-                Input::Age => todo!(),
-                Input::BlockLR => todo!(),
-                Input::BlockForward => todo!(),
-                Input::BlockForwardLong => todo!(),
-                Input::LocX => todo!(),
-                Input::LocY => todo!(),
-                Input::LastMoveX => todo!(),
-                Input::LastMoveY => todo!(),
-                Input::LocWallNS => todo!(),
-                Input::LocWallEW => todo!(),
-                Input::NearestWall => todo!(),
-                Input::PopDensity => todo!(),
+                Input::Random => rand::thread_rng().gen_range((0.0 - 1.0)..1.0),
+                Input::Oscillator => ((time * 256.0) / std::f32::consts::PI).sin(),
+                Input::Age => (time - 0.5) * 2.0,
+                Input::BlockLR => {
+                    let left = self.facing.left();
+                    let right = self.facing.right();
+                    let left = coord.neighbour((grid.len() as u16, grid[0].len() as u16), left);
+                    let right = coord.neighbour((grid.len() as u16, grid[0].len() as u16), right);
+                    let left = left
+                        .map(|coord| grid[coord.x as usize][coord.y as usize])
+                        .unwrap_or(false);
+                    let right = right
+                        .map(|coord| grid[coord.x as usize][coord.y as usize])
+                        .unwrap_or(false);
+                    if left && right {
+                        0.0
+                    } else if left {
+                        0.5
+                    } else if right {
+                        -0.5
+                    } else {
+                        1.0
+                    }
+                }
+                Input::BlockForward => {
+                    let forward =
+                        coord.neighbour((grid.len() as u16, grid[0].len() as u16), self.facing);
+                    let forward = forward
+                        .map(|coord| grid[coord.x as usize][coord.y as usize])
+                        .unwrap_or(true);
+                    if forward {
+                        1.0
+                    } else {
+                        0.0 - 1.0
+                    }
+                }
+                Input::BlockForwardLong => {
+                    let mut i = 0;
+                    loop {
+                        let forward =
+                            coord.neighbour((grid.len() as u16, grid[0].len() as u16), self.facing);
+                        let forward = forward
+                            .map(|coord| grid[coord.x as usize][coord.y as usize])
+                            .unwrap_or(true);
+                        if forward {
+                            break;
+                        }
+                        i += 1;
+                    }
+                    match self.facing {
+                        Direction::North | Direction::South => {
+                            (0.5 - (i as f32 / grid.len() as f32)) * 2.0
+                        }
+                        Direction::East | Direction::West => {
+                            (0.5 - (i as f32 / grid[0].len() as f32)) * 2.0
+                        }
+                    }
+                }
+                Input::LocX => (coord.x as f32 / grid.len() as f32),
+                Input::LocY => (coord.y as f32 / grid[0].len() as f32),
+                Input::LastMoveX => (0.5 - (self.last_move.0 as f32 / time)) * 2.0,
+                Input::LastMoveY => (0.5 - (self.last_move.1 as f32 / time)) * 2.0,
+                Input::LocWallNS => (coord.y as f32 / grid[0].len() as f32) * 2.0 - 1.0,
+                Input::LocWallEW => (coord.x as f32 / grid.len() as f32) * 2.0 - 1.0,
+                Input::NearestWall => {
+                    let ns = ((coord.y as f32 / grid[0].len() as f32) * 2.0 - 1.0).abs();
+                    let ew = ((coord.x as f32 / grid.len() as f32) * 2.0 - 1.0).abs();
+                    if ns < ew {
+                        ns * 2.0 - 1.0
+                    } else {
+                        ew * 2.0 - 1.0
+                    }
+                }
+                Input::PopDensity => {
+                    let neighbours = coord.neighbours((grid.len() as u16, grid[0].len() as u16));
+                    neighbours.iter().fold(0.0, |acc, coord| {
+                        if grid[coord.x as usize][coord.y as usize] {
+                            acc + 1.0
+                        } else {
+                            acc
+                        }
+                    }) / 8.0
+                }
             };
         });
     }
@@ -299,7 +462,8 @@ impl Cell {
 #[derive(Debug, Clone)]
 struct World {
     state: Render,
-    population: HashMap<(u16, u16), Cell>,
+    time: u32,
+    population: HashMap<Coord, Cell>,
 }
 
 impl World {
@@ -328,16 +492,17 @@ impl World {
                 genome.push(valid_connection(state));
             }
 
-            population.insert((x, y), Cell::new(genome));
+            population.insert(Coord::new(x, y), Cell::new(genome));
         }
 
         Self {
             state: state.clone(),
+            time: 0,
             population,
         }
     }
 
-    fn get_map(&self) -> Vec<(u16, u16)> {
+    fn get_map(&self) -> Vec<Coord> {
         self.population.keys().copied().collect()
     }
 
@@ -348,41 +513,43 @@ impl World {
         }
 
         for (coord, _) in &self.population {
-            grid[coord.0 as usize][coord.1 as usize] = true;
+            grid[coord.x as usize][coord.y as usize] = true;
         }
 
         let slice = self.population.keys().cloned().collect::<Vec<_>>();
 
         slice.iter().for_each(|coord| {
             let mut cell = self.population.remove(coord).unwrap();
-            cell.update(&grid);
+            cell.update(
+                &grid,
+                self.time as f32 / self.state.time_steps as f32,
+                coord.clone(),
+            );
             cell.calc();
 
             let res = cell.intention();
-            let new_coord: (i16, i16) = match res.direction {
-                Direction::North => (coord.0 as i16, coord.1 as i16 + 1),
-                Direction::East => (coord.0 as i16 + 1, coord.1 as i16),
-                Direction::South => (coord.0 as i16, coord.1 as i16 - 1),
-                Direction::West => (coord.0 as i16 - 1, coord.1 as i16),
-            };
+            let new_coord = coord.neighbour(
+                (self.state.world_size, self.state.world_size),
+                res.direction,
+            );
 
-            let new_coord = if new_coord.0 < 0
-                || new_coord.0 >= self.state.world_size as i16
-                || new_coord.1 < 0
-                || new_coord.1 >= self.state.world_size as i16
-            {
-                coord.clone()
-            } else {
-                (new_coord.0 as u16, new_coord.1 as u16)
-            };
-
-            if new_coord == *coord || self.population.contains_key(&new_coord) {
-                self.population.insert(coord.clone(), cell);
-            } else {
-                cell.set_direction(res.direction);
-                self.population.insert(new_coord, cell);
+            match new_coord {
+                Some(new_coord) => {
+                    if self.population.contains_key(&new_coord) {
+                        cell.try_move(None);
+                        self.population.insert(coord.clone(), cell);
+                    } else {
+                        cell.try_move(Some(res.direction));
+                        self.population.insert(new_coord, cell);
+                    }
+                }
+                None => {
+                    cell.try_move(None);
+                    self.population.insert(coord.clone(), cell);
+                }
             }
         });
+        self.time += 1;
     }
 }
 
@@ -428,7 +595,7 @@ impl Default for Render {
     }
 }
 
-fn display_world(state: &Render, map: Vec<(u16, u16)>, canvas: NodeRef<leptos::html::Canvas>) {
+fn display_world(state: &Render, map: Vec<Coord>, canvas: NodeRef<leptos::html::Canvas>) {
     let canvas = canvas.get().unwrap();
     let ctx = canvas
         .get_context("2d")
@@ -448,7 +615,7 @@ fn display_world(state: &Render, map: Vec<(u16, u16)>, canvas: NodeRef<leptos::h
     };
 
     for coord in map {
-        pixel(coord.0, coord.1);
+        pixel(coord.x, coord.y);
     }
 }
 
