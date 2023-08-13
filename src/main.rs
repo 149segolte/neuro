@@ -6,10 +6,24 @@ use strum::{EnumCount, FromRepr};
 use wasm_bindgen::JsCast;
 use web_sys::CanvasRenderingContext2d;
 
+type Inner = u8;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum FromConn {
+    Input(Input),
+    Inner(Inner),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum ToConn {
+    Output(Output),
+    Inner(Inner),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Connection {
-    from: u8,
-    to: u8,
+    from: FromConn,
+    to: ToConn,
     weight: f32,
 }
 
@@ -59,45 +73,69 @@ const INNER_STATES: u8 = 4;
 struct Cell {
     genome: Vec<Connection>,
     state: HashMap<Input, f32>,
-    brain: HashMap<u8, f32>,
-    output: HashMap<Output, f32>,
+    intermidiate: HashMap<Inner, (Vec<(FromConn, f32)>, f32)>,
+    result: HashMap<Output, (Vec<(FromConn, f32)>, f32)>,
 }
 
 impl Cell {
     fn new(genome: Vec<Connection>) -> Self {
-        let mut state = HashMap::new();
-        let mut brain = HashMap::new();
-        let mut output = HashMap::new();
+        let mut state: HashMap<Input, f32> = HashMap::new();
+        let mut intermidiate: HashMap<Inner, (Vec<(FromConn, f32)>, f32)> = HashMap::new();
+        let mut result: HashMap<Output, (Vec<(FromConn, f32)>, f32)> = HashMap::new();
 
         for gene in genome.iter() {
-            let in_type = gene.from & 0b1000_0000;
-            let from = gene.from & 0b0111_1111;
-            let out_type = gene.to & 0b1000_0000;
-            let to = gene.to & 0b0111_1111;
-
-            if in_type == 0 {
-                state.insert(Input::from_repr(from as usize).unwrap(), 0.0);
-            } else {
-                brain.insert(from, 0.0);
+            match gene.from {
+                FromConn::Input(input) => {
+                    state.insert(input, 0.0);
+                }
+                _ => {}
             }
 
-            if out_type == 0 {
-                output.insert(Output::from_repr(to as usize).unwrap(), 0.0);
-            } else {
-                brain.insert(to, 0.0);
+            match gene.to {
+                ToConn::Output(output) => {
+                    if let Some((connections, value)) = result.get_mut(&output) {
+                        connections.push((gene.from, gene.weight));
+                    } else {
+                        result.insert(output, (vec![(gene.from, gene.weight)], 0.0));
+                    }
+                }
+                ToConn::Inner(inner) => {
+                    if let Some((connections, value)) = intermidiate.get_mut(&inner) {
+                        connections.push((gene.from, gene.weight));
+                    } else {
+                        intermidiate.insert(inner, (vec![(gene.from, gene.weight)], 0.0));
+                    }
+                }
             }
         }
 
         Self {
             genome,
             state,
-            brain,
-            output,
+            intermidiate,
+            result,
         }
     }
 
     fn update(&mut self, grid: &Vec<Vec<bool>>) {
-        todo!()
+        self.state.iter_mut().for_each(|(input, value)| {
+            *value = match input {
+                Input::Random => rand::thread_rng().gen::<f32>(),
+                Input::Oscillator => todo!(),
+                Input::Age => todo!(),
+                Input::BlockLR => todo!(),
+                Input::BlockForward => todo!(),
+                Input::BlockForwardLong => todo!(),
+                Input::LocX => todo!(),
+                Input::LocY => todo!(),
+                Input::LastMoveX => todo!(),
+                Input::LastMoveY => todo!(),
+                Input::LocWallNS => todo!(),
+                Input::LocWallEW => todo!(),
+                Input::NearestWall => todo!(),
+                Input::PopDensity => todo!(),
+            };
+        });
     }
 
     fn calc(&mut self) {
@@ -105,7 +143,18 @@ impl Cell {
     }
 
     fn intention(&self) -> u8 {
-        todo!()
+        let mut intention = 0u8;
+        self.result.iter().for_each(|(output, (_, value))| {
+            match output {
+                Output::MoveForward => todo!(),
+                Output::MoveRandom => todo!(),
+                Output::MoveReverse => todo!(),
+                Output::MoveLR => todo!(),
+                Output::MoveEW => todo!(),
+                Output::MoveNS => todo!(),
+            };
+        });
+        intention
     }
 }
 
@@ -203,29 +252,20 @@ impl World {
 fn valid_connection(state: &Render) -> Connection {
     let mut rng = rand::thread_rng();
     let in_type: bool = rng.gen();
-    let mut from: u8;
-    if in_type {
-        from = rng.gen_range(0..Input::COUNT as u8);
+    let from = if in_type {
+        FromConn::Input(Input::from_repr(rng.gen_range(0..Input::COUNT)).unwrap())
     } else {
-        from = rng.gen_range(0..INNER_STATES);
-        from |= 0b1000_0000;
-    }
+        FromConn::Inner(rng.gen_range(0..INNER_STATES))
+    };
     let out_type: bool = rng.gen();
-    let mut to: u8;
-    if out_type {
-        to = rng.gen_range(0..Output::COUNT as u8);
+    let to = if out_type {
+        ToConn::Output(Output::from_repr(rng.gen_range(0..Output::COUNT)).unwrap())
     } else {
-        to = rng.gen_range(0..INNER_STATES);
-        to |= 0b1000_0000;
-    }
-    let weight: f32 =
-        rng.gen_range((0.0 - state.weight_factor as f32)..(state.weight_factor as f32));
+        ToConn::Inner(rng.gen_range(0..INNER_STATES))
+    };
+    let weight: f32 = rng.gen_range((0.0 - 1.0)..1.0) * (state.weight_factor as f32);
 
-    Connection {
-        from,
-        to,
-        weight: weight as f32 / state.weight_factor as f32,
-    }
+    Connection { from, to, weight }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
