@@ -36,8 +36,8 @@ enum Input {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EnumCount, FromRepr)]
 enum Output {
-    MoveForward = 0,
-    MoveRandom,
+    MoveRandom = 0,
+    MoveForward,
     MoveReverse,
     MoveLR,
     MoveEW,
@@ -74,6 +74,35 @@ enum Direction {
     South,
     East,
     West,
+}
+
+impl Direction {
+    fn reverse(&self) -> Self {
+        match self {
+            Self::North => Self::South,
+            Self::South => Self::North,
+            Self::East => Self::West,
+            Self::West => Self::East,
+        }
+    }
+
+    fn left(&self) -> Self {
+        match self {
+            Self::North => Self::West,
+            Self::South => Self::East,
+            Self::East => Self::North,
+            Self::West => Self::South,
+        }
+    }
+
+    fn right(&self) -> Self {
+        match self {
+            Self::North => Self::East,
+            Self::South => Self::West,
+            Self::East => Self::South,
+            Self::West => Self::North,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -209,16 +238,61 @@ impl Cell {
     fn intention(&self) -> Intention {
         self.result
             .iter()
-            .fold(Intention::new(self.facing), |acc, (output, (_, value))| {
-                match output {
-                    Output::MoveForward => todo!(),
-                    Output::MoveRandom => todo!(),
-                    Output::MoveReverse => todo!(),
-                    Output::MoveLR => todo!(),
-                    Output::MoveEW => todo!(),
-                    Output::MoveNS => todo!(),
-                };
-            })
+            .fold(
+                Intention::new(self.facing),
+                |acc, (output, (_, value))| match output {
+                    Output::MoveRandom => {
+                        if value > &0.5 {
+                            Intention::new(
+                                Direction::from_repr(rand::thread_rng().gen_range(0..4)).unwrap(),
+                            )
+                        } else {
+                            acc
+                        }
+                    }
+                    Output::MoveForward => {
+                        if value > &0.5 {
+                            Intention::new(self.facing)
+                        } else {
+                            acc
+                        }
+                    }
+                    Output::MoveReverse => {
+                        if value > &0.5 {
+                            Intention::new(self.facing.reverse())
+                        } else {
+                            acc
+                        }
+                    }
+                    Output::MoveLR => {
+                        if value > &0.5 {
+                            Intention::new(self.facing.left())
+                        } else if value < &-0.5 {
+                            Intention::new(self.facing.right())
+                        } else {
+                            acc
+                        }
+                    }
+                    Output::MoveEW => {
+                        if value > &0.5 {
+                            Intention::new(Direction::East)
+                        } else if value < &-0.5 {
+                            Intention::new(Direction::West)
+                        } else {
+                            acc
+                        }
+                    }
+                    Output::MoveNS => {
+                        if value > &0.5 {
+                            Intention::new(Direction::North)
+                        } else if value < &-0.5 {
+                            Intention::new(Direction::South)
+                        } else {
+                            acc
+                        }
+                    }
+                },
+            )
     }
 }
 
