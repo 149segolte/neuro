@@ -7,25 +7,7 @@ use wasm_bindgen::JsCast;
 use web_sys::CanvasRenderingContext2d;
 
 type Inner = u8;
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum FromConn {
-    Input(Input),
-    Inner(Inner),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum ToConn {
-    Output(Output),
-    Inner(Inner),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct Connection {
-    from: FromConn,
-    to: ToConn,
-    weight: f32,
-}
+const INNER_STATES: u8 = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EnumCount, FromRepr)]
 enum Input {
@@ -67,7 +49,43 @@ enum Output {
     // KillForward,
 }
 
-const INNER_STATES: u8 = 4;
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum FromConn {
+    Input(Input),
+    Inner(Inner),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum ToConn {
+    Output(Output),
+    Inner(Inner),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Connection {
+    from: FromConn,
+    to: ToConn,
+    weight: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, FromRepr)]
+enum Direction {
+    North,
+    South,
+    East,
+    West,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Intention {
+    direction: Direction,
+}
+
+impl Intention {
+    fn new(direction: Direction) -> Self {
+        Self { direction }
+    }
+}
 
 #[derive(Debug, Clone)]
 struct Cell {
@@ -75,6 +93,7 @@ struct Cell {
     state: HashMap<Input, f32>,
     intermidiate: HashMap<Inner, (Vec<(FromConn, f32)>, f32)>,
     result: HashMap<Output, (Vec<(FromConn, f32)>, f32)>,
+    facing: Direction,
 }
 
 impl Cell {
@@ -114,7 +133,12 @@ impl Cell {
             state,
             intermidiate,
             result,
+            facing: Direction::from_repr(rand::thread_rng().gen_range(0..4)).unwrap(),
         }
+    }
+
+    fn set_direction(&mut self, direction: Direction) {
+        self.facing = direction;
     }
 
     fn update(&mut self, grid: &Vec<Vec<bool>>) {
@@ -139,22 +163,62 @@ impl Cell {
     }
 
     fn calc(&mut self) {
-        todo!()
+        // Initialize intermidiate states using only input states
+        let mut init: HashMap<Inner, f32> = HashMap::new();
+        self.intermidiate
+            .iter()
+            .for_each(|(inner, (connections, value))| {
+                init.insert(
+                    inner.clone(),
+                    connections
+                        .iter()
+                        .fold(0.0, |acc, (from, weight)| match from {
+                            FromConn::Input(input) => acc + self.state[input] * weight,
+                            _ => acc,
+                        })
+                        .tanh(),
+                );
+            });
+
+        // re-calculate intermidiate states including previous values
+        self.intermidiate
+            .iter_mut()
+            .for_each(|(inner, (connections, value))| {
+                *value = connections
+                    .iter()
+                    .fold(0.0, |acc, (from, weight)| match from {
+                        FromConn::Input(input) => acc + self.state[input] * weight,
+                        FromConn::Inner(inner) => acc + init[inner] * weight,
+                    })
+                    .tanh();
+            });
+
+        self.result
+            .iter_mut()
+            .for_each(|(output, (connections, value))| {
+                *value = connections
+                    .iter()
+                    .fold(0.0, |acc, (from, weight)| match from {
+                        FromConn::Input(input) => acc + self.state[input] * weight,
+                        FromConn::Inner(inner) => acc + self.intermidiate[inner].1 * weight,
+                    })
+                    .tanh();
+            });
     }
 
-    fn intention(&self) -> u8 {
-        let mut intention = 0u8;
-        self.result.iter().for_each(|(output, (_, value))| {
-            match output {
-                Output::MoveForward => todo!(),
-                Output::MoveRandom => todo!(),
-                Output::MoveReverse => todo!(),
-                Output::MoveLR => todo!(),
-                Output::MoveEW => todo!(),
-                Output::MoveNS => todo!(),
-            };
-        });
-        intention
+    fn intention(&self) -> Intention {
+        self.result
+            .iter()
+            .fold(Intention::new(self.facing), |acc, (output, (_, value))| {
+                match output {
+                    Output::MoveForward => todo!(),
+                    Output::MoveRandom => todo!(),
+                    Output::MoveReverse => todo!(),
+                    Output::MoveLR => todo!(),
+                    Output::MoveEW => todo!(),
+                    Output::MoveNS => todo!(),
+                };
+            })
     }
 }
 
@@ -216,33 +280,32 @@ impl World {
         let slice = self.population.keys().cloned().collect::<Vec<_>>();
 
         slice.iter().for_each(|coord| {
-            let cell = self.population.get_mut(coord).unwrap();
+            let mut cell = self.population.remove(coord).unwrap();
             cell.update(&grid);
             cell.calc();
 
-            let new_coord: (i16, i16) = match cell.intention() {
-                0 => (coord.0 as i16, coord.1 as i16 - 1),
-                1 => (coord.0 as i16 + 1, coord.1 as i16),
-                2 => (coord.0 as i16, coord.1 as i16 + 1),
-                3 => (coord.0 as i16 - 1, coord.1 as i16),
-                _ => panic!("Invalid move: {}", cell.intention()),
+            let res = cell.intention();
+            let new_coord: (i16, i16) = match res.direction {
+                Direction::North => (coord.0 as i16, coord.1 as i16 + 1),
+                Direction::East => (coord.0 as i16 + 1, coord.1 as i16),
+                Direction::South => (coord.0 as i16, coord.1 as i16 - 1),
+                Direction::West => (coord.0 as i16 - 1, coord.1 as i16),
             };
 
-            if new_coord.0 < 0
+            let new_coord = if new_coord.0 < 0
                 || new_coord.0 >= self.state.world_size as i16
                 || new_coord.1 < 0
                 || new_coord.1 >= self.state.world_size as i16
             {
-                return;
-            }
+                coord.clone()
+            } else {
+                (new_coord.0 as u16, new_coord.1 as u16)
+            };
 
-            let new_coord = (new_coord.0 as u16, new_coord.1 as u16);
-
-            if self.population.contains_key(&new_coord) {
-                return;
-            }
-
-            if let Some(cell) = self.population.remove(coord) {
+            if new_coord == *coord || self.population.contains_key(&new_coord) {
+                self.population.insert(coord.clone(), cell);
+            } else {
+                cell.set_direction(res.direction);
                 self.population.insert(new_coord, cell);
             }
         });
