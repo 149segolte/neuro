@@ -179,6 +179,55 @@ impl Coord {
     }
 }
 
+fn trim(
+    state: &mut HashMap<Input, f32>,
+    inter: &mut HashMap<Inner, (Vec<(FromConn, f32)>, f32)>,
+    result: &mut HashMap<Output, (Vec<(FromConn, f32)>, f32)>,
+) {
+    let mut count = inter.len() + 1;
+    while count > 0 && inter.len() > 0 {
+        let keys = inter.keys().copied().collect::<Vec<_>>();
+        inter.retain(|_, (c, _)| {
+            c.retain(|(f, _)| match f {
+                FromConn::Inner(i) => keys.contains(i),
+                _ => true,
+            });
+            !c.is_empty()
+        });
+        count -= 1;
+    }
+
+    let mut inner = Vec::new();
+    result.retain(|_, (c, _)| {
+        c.retain(|(f, _)| match f {
+            FromConn::Inner(i) => {
+                if inter.contains_key(i) {
+                    inner.push(*i);
+                    true
+                } else {
+                    false
+                }
+            }
+            _ => true,
+        });
+        !c.is_empty()
+    });
+
+    inter.retain(|i, _| inner.contains(i));
+
+    state.retain(|i, _| {
+        inter
+            .values()
+            .any(|(c, _)| c.iter().any(|(f, _)| f == &FromConn::Input(*i)))
+            || result.values().any(|(c, _)| {
+                c.iter().any(|(f, _)| match f {
+                    FromConn::Input(ii) => ii == i,
+                    _ => false,
+                })
+            })
+    });
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Intention {
     direction: Direction,
@@ -192,7 +241,6 @@ impl Intention {
 
 #[derive(Debug, Clone)]
 struct Cell {
-    genome: Vec<Connection>,
     state: HashMap<Input, f32>,
     intermidiate: HashMap<Inner, (Vec<(FromConn, f32)>, f32)>,
     result: HashMap<Output, (Vec<(FromConn, f32)>, f32)>,
@@ -216,14 +264,14 @@ impl Cell {
 
             match gene.to {
                 ToConn::Output(output) => {
-                    if let Some((connections, value)) = result.get_mut(&output) {
+                    if let Some((connections, _)) = result.get_mut(&output) {
                         connections.push((gene.from, gene.weight));
                     } else {
                         result.insert(output, (vec![(gene.from, gene.weight)], 0.0));
                     }
                 }
                 ToConn::Inner(inner) => {
-                    if let Some((connections, value)) = intermidiate.get_mut(&inner) {
+                    if let Some((connections, _)) = intermidiate.get_mut(&inner) {
                         connections.push((gene.from, gene.weight));
                     } else {
                         intermidiate.insert(inner, (vec![(gene.from, gene.weight)], 0.0));
@@ -232,8 +280,9 @@ impl Cell {
             }
         }
 
+        trim(&mut state, &mut intermidiate, &mut result);
+
         Self {
-            genome,
             state,
             intermidiate,
             result,
@@ -325,8 +374,8 @@ impl Cell {
                         }
                     }
                 }
-                Input::LocX => (coord.x as f32 / grid.len() as f32),
-                Input::LocY => (coord.y as f32 / grid[0].len() as f32),
+                Input::LocX => coord.x as f32 / grid.len() as f32,
+                Input::LocY => coord.y as f32 / grid[0].len() as f32,
                 Input::LastMoveX => (0.5 - (self.last_move.0 as f32 / time)) * 2.0,
                 Input::LastMoveY => (0.5 - (self.last_move.1 as f32 / time)) * 2.0,
                 Input::LocWallNS => (coord.y as f32 / grid[0].len() as f32) * 2.0 - 1.0,
@@ -355,11 +404,12 @@ impl Cell {
     }
 
     fn calc(&mut self) {
+        // debug_warn!("calc");
         // Initialize intermidiate states using only input states
         let mut init: HashMap<Inner, f32> = HashMap::new();
         self.intermidiate
             .iter()
-            .for_each(|(inner, (connections, value))| {
+            .for_each(|(inner, (connections, _))| {
                 init.insert(
                     inner.clone(),
                     connections
@@ -372,10 +422,12 @@ impl Cell {
                 );
             });
 
+        // debug_warn!("init: {:?}", init);
         // re-calculate intermidiate states including previous values
         self.intermidiate
             .iter_mut()
             .for_each(|(inner, (connections, value))| {
+                // debug_warn!("inner: {:?}", inner);
                 *value = connections
                     .iter()
                     .fold(0.0, |acc, (from, weight)| match from {
@@ -385,9 +437,11 @@ impl Cell {
                     .tanh();
             });
 
+        // debug_warn!("intermidiate: {:?}", self.intermidiate);
         self.result
             .iter_mut()
             .for_each(|(output, (connections, value))| {
+                // debug_warn!("output: {:?}", output);
                 *value = connections
                     .iter()
                     .fold(0.0, |acc, (from, weight)| match from {
@@ -396,6 +450,8 @@ impl Cell {
                     })
                     .tanh();
             });
+
+        // debug_warn!("result: {:?}", self.result);
     }
 
     fn intention(&self) -> Intention {
@@ -466,24 +522,34 @@ struct World {
     population: HashMap<Coord, Cell>,
 }
 
+impl Default for World {
+    fn default() -> Self {
+        Self {
+            state: Render::default(),
+            time: 0,
+            population: HashMap::new(),
+        }
+    }
+}
+
 impl World {
     fn new(state: &Render) -> Self {
         let mut rng = rand::thread_rng();
         let size_dist = Uniform::from(0..state.world_size);
         let pop_size = ((state.world_size as u32).pow(2) as f32 * state.pop_percent) as usize;
 
-        debug_warn!("pop_size: {}", pop_size);
+        // debug_warn!("pop_size: {}", pop_size);
 
         let mut coords = HashSet::with_capacity(pop_size);
         while coords.len() < pop_size {
             coords.insert((size_dist.sample(&mut rng), size_dist.sample(&mut rng)));
         }
 
-        debug_warn!(
+        /* debug_warn!(
             "coords: {:?}, sample: {:?}",
             coords.len(),
             coords.iter().next()
-        );
+        ); */
 
         let mut population = HashMap::with_capacity(pop_size);
         for (x, y) in coords {
@@ -515,19 +581,24 @@ impl World {
         for (coord, _) in &self.population {
             grid[coord.x as usize][coord.y as usize] = true;
         }
+        // debug_warn!("grid: {:?}", grid);
 
         let slice = self.population.keys().cloned().collect::<Vec<_>>();
 
         slice.iter().for_each(|coord| {
+            // debug_warn!("coord: {:?}", coord);
             let mut cell = self.population.remove(coord).unwrap();
             cell.update(
                 &grid,
                 self.time as f32 / self.state.time_steps as f32,
                 coord.clone(),
             );
+            // debug_warn!("updated cell: {:?}", cell);
             cell.calc();
+            // debug_warn!("calced cell: {:?}", cell);
 
             let res = cell.intention();
+            // debug_warn!("intention: {:?}", res);
             let new_coord = coord.neighbour(
                 (self.state.world_size, self.state.world_size),
                 res.direction,
@@ -548,6 +619,7 @@ impl World {
                     self.population.insert(coord.clone(), cell);
                 }
             }
+            // debug_warn!("cell moved");
         });
         self.time += 1;
     }
@@ -622,6 +694,7 @@ fn display_world(state: &Render, map: Vec<Coord>, canvas: NodeRef<leptos::html::
 fn main() {
     mount_to_body(|cx| {
         let (canvas_size, _set_canvas_size) = create_signal(cx, 720);
+        let (world, set_world) = create_signal(cx, World::default());
 
         let (state, set_state) = create_signal(cx, Render::default());
         set_state(Render {
@@ -643,9 +716,9 @@ fn main() {
 
         let compute = move |_| {
             set_render(state());
-            let state = state();
+            let state = state.get();
 
-            debug_warn!("state: {:?}", state);
+            // debug_warn!("state: {:?}", state);
 
             let console = document().get_element_by_id("console").unwrap();
             console.class_list().remove_1("hidden").unwrap();
@@ -665,22 +738,22 @@ fn main() {
             )
             .as_str());
 
-            let mut world = World::new(&state);
+            set_world(World::new(&state));
 
             log("World loaded!");
 
-            display_world(&state, world.get_map(), canvas_ref);
-
-            log("Starting simulation...");
+            display_world(&state, world().get_map(), canvas_ref);
 
             console.class_list().add_1("hidden").unwrap();
+        };
 
-            for _ in 0..state.time_steps {
-                world.step();
-                display_world(&state, world.get_map(), canvas_ref);
+        let play_sim = move |_| {
+            for i in 0..state.get().time_steps {
+                // debug_warn!("step {}", i);
+                world().step();
             }
-
-            log("Simulation complete!");
+            // debug_warn!("done");
+            display_world(&state.get(), world().get_map(), canvas_ref);
         };
 
         view! { cx,
@@ -762,11 +835,18 @@ fn main() {
                             </div>
                         </div>
 
-                        <button prop:disabled=compute_state
+                        <div class="flex flex-row gap-2">
+                            <button prop:disabled=compute_state
                                 on:click=compute
                                 class="bg-green-400 w-fit mt-2 py-2 px-4 text-lg rounded-full disabled:bg-gray-500 disabled:text-white disabled:opacity-80 hover:bg-green-300 transition-all">
-                            "Compute"
-                        </button>
+                                "Compute"
+                            </button>
+
+                            <button on:click=play_sim
+                                class="bg-green-400 w-fit mt-2 py-2 px-4 text-lg rounded-full disabled:bg-gray-500 disabled:text-white disabled:opacity-80 hover:bg-green-300 transition-all">
+                                "Play"
+                            </button>
+                        </div>
                     </div>
 
                     <div class="relative mb-8 lg:m-0 aspect-square border shadow-2xl rounded-lg overflow-hidden">
