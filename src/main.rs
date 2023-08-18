@@ -1,4 +1,7 @@
 use leptos::*;
+use petgraph::algo::dijkstra;
+use petgraph::prelude::*;
+use petgraph::stable_graph::StableUnGraph;
 use rand::distributions::{Distribution, Uniform};
 use rand::Rng;
 use std::collections::{HashMap, HashSet};
@@ -6,17 +9,14 @@ use strum::{EnumCount, FromRepr};
 use wasm_bindgen::JsCast;
 use web_sys::CanvasRenderingContext2d;
 
-type Inner = u8;
-const INNER_STATES: u8 = 4;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EnumCount, FromRepr)]
-enum Input {
+enum InputType {
     Random = 0,
     Oscillator,
     Age,
     BlockLR,
     BlockForward,
-    BlockForwardLong,
+    // BlockForwardLong,
     LocX,
     LocY,
     LastMoveX,
@@ -33,9 +33,16 @@ enum Input {
     // PheromoneGradientLR,
     // PheromoneGradientForward,
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct Input(InputType, i16);
+
+type InnerType = u8;
+const INNER_STATES: u8 = 4;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct Inner(InnerType, i16);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EnumCount, FromRepr)]
-enum Output {
+enum OutputType {
     MoveRandom = 0,
     MoveForward,
     MoveReverse,
@@ -48,24 +55,64 @@ enum Output {
     // EmitPheromone,
     // KillForward,
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct Output(OutputType, i16);
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum FromConn {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum Neuron {
     Input(Input),
-    Inner(Inner),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum ToConn {
     Output(Output),
     Inner(Inner),
 }
 
+impl Neuron {
+    fn get_value(&self) -> f32 {
+        match self {
+            Self::Input(i) => i.1 as f32 / i16::MIN as f32,
+            Self::Output(o) => o.1 as f32 / i16::MIN as f32,
+            Self::Inner(i) => i.1 as f32 / i16::MIN as f32,
+        }
+    }
+
+    fn set_value(&mut self, value: f32) {
+        match self {
+            Self::Input(i) => i.1 = ((0.0 - value) * i16::MIN as f32) as i16,
+            Self::Output(o) => o.1 = ((0.0 - value) * i16::MIN as f32) as i16,
+            Self::Inner(i) => i.1 = ((0.0 - value) * i16::MIN as f32) as i16,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Connection {
-    from: FromConn,
-    to: ToConn,
+    from: Neuron,
+    to: Neuron,
     weight: f32,
+}
+
+fn valid_connection(state: &Render) -> Connection {
+    let mut rng = rand::thread_rng();
+    let in_type: bool = rng.gen();
+    let from = if in_type {
+        Neuron::Input(Input(
+            InputType::from_repr(rng.gen_range(0..InputType::COUNT)).unwrap(),
+            0,
+        ))
+    } else {
+        Neuron::Inner(Inner(rng.gen_range(0..INNER_STATES), 0))
+    };
+    let out_type: bool = rng.gen();
+    let to = if out_type {
+        Neuron::Output(Output(
+            OutputType::from_repr(rng.gen_range(0..OutputType::COUNT)).unwrap(),
+            0,
+        ))
+    } else {
+        Neuron::Inner(Inner(rng.gen_range(0..INNER_STATES), 0))
+    };
+    let weight: f32 = rng.gen_range((0.0 - 1.0)..1.0) * (state.weight_factor as f32);
+
+    Connection { from, to, weight }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, FromRepr)]
@@ -179,55 +226,6 @@ impl Coord {
     }
 }
 
-fn trim(
-    state: &mut HashMap<Input, f32>,
-    inter: &mut HashMap<Inner, (Vec<(FromConn, f32)>, f32)>,
-    result: &mut HashMap<Output, (Vec<(FromConn, f32)>, f32)>,
-) {
-    let mut count = inter.len() + 1;
-    while count > 0 && inter.len() > 0 {
-        let keys = inter.keys().copied().collect::<Vec<_>>();
-        inter.retain(|_, (c, _)| {
-            c.retain(|(f, _)| match f {
-                FromConn::Inner(i) => keys.contains(i),
-                _ => true,
-            });
-            !c.is_empty()
-        });
-        count -= 1;
-    }
-
-    let mut inner = Vec::new();
-    result.retain(|_, (c, _)| {
-        c.retain(|(f, _)| match f {
-            FromConn::Inner(i) => {
-                if inter.contains_key(i) {
-                    inner.push(*i);
-                    true
-                } else {
-                    false
-                }
-            }
-            _ => true,
-        });
-        !c.is_empty()
-    });
-
-    inter.retain(|i, _| inner.contains(i));
-
-    state.retain(|i, _| {
-        inter
-            .values()
-            .any(|(c, _)| c.iter().any(|(f, _)| f == &FromConn::Input(*i)))
-            || result.values().any(|(c, _)| {
-                c.iter().any(|(f, _)| match f {
-                    FromConn::Input(ii) => ii == i,
-                    _ => false,
-                })
-            })
-    });
-}
-
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Intention {
     direction: Direction,
@@ -241,51 +239,118 @@ impl Intention {
 
 #[derive(Debug, Clone)]
 struct Cell {
-    state: HashMap<Input, f32>,
-    intermidiate: HashMap<Inner, (Vec<(FromConn, f32)>, f32)>,
-    result: HashMap<Output, (Vec<(FromConn, f32)>, f32)>,
+    brain: StableUnGraph<Neuron, f32>,
+    inputs: HashMap<InputType, NodeIndex>,
+    internals: HashMap<InnerType, NodeIndex>,
+    outputs: HashMap<OutputType, NodeIndex>,
     facing: Direction,
     last_move: (u16, u16),
 }
 
 impl Cell {
-    fn new(genome: Vec<Connection>) -> Self {
-        let mut state: HashMap<Input, f32> = HashMap::new();
-        let mut intermidiate: HashMap<Inner, (Vec<(FromConn, f32)>, f32)> = HashMap::new();
-        let mut result: HashMap<Output, (Vec<(FromConn, f32)>, f32)> = HashMap::new();
+    fn new(params: &Render) -> Self {
+        let mut graph = StableUnGraph::<Neuron, f32>::default();
+        let mut inputs = HashMap::new();
+        let mut internals = HashMap::new();
+        let mut outputs = HashMap::new();
+
+        let mut genome = Vec::with_capacity(params.genome_size as usize);
+        for _ in 0..params.genome_size {
+            genome.push(valid_connection(params));
+        }
 
         for gene in genome.iter() {
             match gene.from {
-                FromConn::Input(input) => {
-                    state.insert(input, 0.0);
+                Neuron::Input(input) => {
+                    if inputs.get(&input.0).is_none() {
+                        let node = graph.add_node(Neuron::Input(input));
+                        inputs.insert(input.0, node);
+                    }
                 }
-                _ => {}
+                Neuron::Inner(inner) => {
+                    if internals.get(&inner.0).is_none() {
+                        let node = graph.add_node(Neuron::Inner(inner));
+                        internals.insert(inner.0, node);
+                    }
+                }
+                _ => unreachable!(),
             }
 
             match gene.to {
-                ToConn::Output(output) => {
-                    if let Some((connections, _)) = result.get_mut(&output) {
-                        connections.push((gene.from, gene.weight));
-                    } else {
-                        result.insert(output, (vec![(gene.from, gene.weight)], 0.0));
+                Neuron::Inner(inner) => {
+                    if internals.get(&inner.0).is_none() {
+                        let node = graph.add_node(Neuron::Inner(inner));
+                        internals.insert(inner.0, node);
                     }
                 }
-                ToConn::Inner(inner) => {
-                    if let Some((connections, _)) = intermidiate.get_mut(&inner) {
-                        connections.push((gene.from, gene.weight));
-                    } else {
-                        intermidiate.insert(inner, (vec![(gene.from, gene.weight)], 0.0));
+                Neuron::Output(output) => {
+                    if outputs.get(&output.0).is_none() {
+                        let node = graph.add_node(Neuron::Output(output));
+                        outputs.insert(output.0, node);
                     }
                 }
+                _ => unreachable!(),
             }
+
+            let from = match gene.from {
+                Neuron::Input(input) => inputs.get(&input.0).copied().unwrap(),
+                Neuron::Inner(inner) => internals.get(&inner.0).copied().unwrap(),
+                _ => unreachable!(),
+            };
+            let to = match gene.to {
+                Neuron::Inner(inner) => internals.get(&inner.0).copied().unwrap(),
+                Neuron::Output(output) => outputs.get(&output.0).copied().unwrap(),
+                _ => unreachable!(),
+            };
+            graph.add_edge(from, to, gene.weight);
         }
 
-        trim(&mut state, &mut intermidiate, &mut result);
+        inputs.retain(|_, i| {
+            let paths = dijkstra(&graph, *i, None, |_| 1);
+            let mut valid = paths.keys();
+            let res = valid.any(|n| match graph.node_weight(*n).unwrap() {
+                Neuron::Output(_) => true,
+                _ => false,
+            });
+            if !res {
+                graph.remove_node(*i);
+            }
+            res
+        });
+        internals.retain(|_, i| {
+            let paths = dijkstra(&graph, *i, None, |_| 1);
+            let mut valid = paths.keys();
+            let ins = valid.any(|n| match graph.node_weight(*n).unwrap() {
+                Neuron::Input(_) => true,
+                _ => false,
+            });
+            let outs = valid.any(|n| match graph.node_weight(*n).unwrap() {
+                Neuron::Output(_) => true,
+                _ => false,
+            });
+            if !ins || !outs {
+                graph.remove_node(*i);
+            }
+            ins && outs
+        });
+        outputs.retain(|_, i| {
+            let paths = dijkstra(&graph, *i, None, |_| 1);
+            let mut valid = paths.keys();
+            let res = valid.any(|n| match graph.node_weight(*n).unwrap() {
+                Neuron::Inner(_) => true,
+                _ => false,
+            });
+            if !res {
+                graph.remove_node(*i);
+            }
+            res
+        });
 
         Self {
-            state,
-            intermidiate,
-            result,
+            brain: graph,
+            inputs,
+            internals,
+            outputs,
             facing: Direction::from_repr(rand::thread_rng().gen_range(0..4)).unwrap(),
             last_move: (0, 0),
         }
@@ -314,12 +379,13 @@ impl Cell {
     }
 
     fn update(&mut self, grid: &Vec<Vec<bool>>, time: f32, coord: Coord) {
-        self.state.iter_mut().for_each(|(input, value)| {
-            *value = match input {
-                Input::Random => rand::thread_rng().gen_range((0.0 - 1.0)..1.0),
-                Input::Oscillator => ((time * 256.0) / std::f32::consts::PI).sin(),
-                Input::Age => (time - 0.5) * 2.0,
-                Input::BlockLR => {
+        self.inputs.iter().for_each(|(input, index)| {
+            let node = self.brain.node_weight_mut(*index).unwrap();
+            node.set_value(match input {
+                InputType::Random => rand::thread_rng().gen_range((0.0 - 1.0)..1.0),
+                InputType::Oscillator => ((time * 256.0) / std::f32::consts::PI).sin(),
+                InputType::Age => (time - 0.5) * 2.0,
+                InputType::BlockLR => {
                     let left = self.facing.left();
                     let right = self.facing.right();
                     let left = coord.neighbour((grid.len() as u16, grid[0].len() as u16), left);
@@ -340,7 +406,7 @@ impl Cell {
                         1.0
                     }
                 }
-                Input::BlockForward => {
+                InputType::BlockForward => {
                     let forward =
                         coord.neighbour((grid.len() as u16, grid[0].len() as u16), self.facing);
                     let forward = forward
@@ -352,7 +418,7 @@ impl Cell {
                         0.0 - 1.0
                     }
                 }
-                Input::BlockForwardLong => {
+                /* InputType::BlockForwardLong => {
                     let mut i = 0;
                     loop {
                         let forward =
@@ -373,14 +439,14 @@ impl Cell {
                             (0.5 - (i as f32 / grid[0].len() as f32)) * 2.0
                         }
                     }
-                }
-                Input::LocX => coord.x as f32 / grid.len() as f32,
-                Input::LocY => coord.y as f32 / grid[0].len() as f32,
-                Input::LastMoveX => (0.5 - (self.last_move.0 as f32 / time)) * 2.0,
-                Input::LastMoveY => (0.5 - (self.last_move.1 as f32 / time)) * 2.0,
-                Input::LocWallNS => (coord.y as f32 / grid[0].len() as f32) * 2.0 - 1.0,
-                Input::LocWallEW => (coord.x as f32 / grid.len() as f32) * 2.0 - 1.0,
-                Input::NearestWall => {
+                } */
+                InputType::LocX => coord.x as f32 / grid.len() as f32,
+                InputType::LocY => coord.y as f32 / grid[0].len() as f32,
+                InputType::LastMoveX => (0.5 - (self.last_move.0 as f32 / time)) * 2.0,
+                InputType::LastMoveY => (0.5 - (self.last_move.1 as f32 / time)) * 2.0,
+                InputType::LocWallNS => (coord.y as f32 / grid[0].len() as f32) * 2.0 - 1.0,
+                InputType::LocWallEW => (coord.x as f32 / grid.len() as f32) * 2.0 - 1.0,
+                InputType::NearestWall => {
                     let ns = ((coord.y as f32 / grid[0].len() as f32) * 2.0 - 1.0).abs();
                     let ew = ((coord.x as f32 / grid.len() as f32) * 2.0 - 1.0).abs();
                     if ns < ew {
@@ -389,7 +455,7 @@ impl Cell {
                         ew * 2.0 - 1.0
                     }
                 }
-                Input::PopDensity => {
+                InputType::PopDensity => {
                     let neighbours = coord.neighbours((grid.len() as u16, grid[0].len() as u16));
                     neighbours.iter().fold(0.0, |acc, coord| {
                         if grid[coord.x as usize][coord.y as usize] {
@@ -399,69 +465,52 @@ impl Cell {
                         }
                     }) / 8.0
                 }
-            };
+            });
         });
     }
 
     fn calc(&mut self) {
-        // debug_warn!("calc");
-        // Initialize intermidiate states using only input states
-        let mut init: HashMap<Inner, f32> = HashMap::new();
-        self.intermidiate
-            .iter()
-            .for_each(|(inner, (connections, _))| {
-                init.insert(
-                    inner.clone(),
-                    connections
-                        .iter()
-                        .fold(0.0, |acc, (from, weight)| match from {
-                            FromConn::Input(input) => acc + self.state[input] * weight,
-                            _ => acc,
-                        })
-                        .tanh(),
-                );
+        self.internals.iter().for_each(|(_, index)| {
+            let mut value = 0.0;
+            self.brain.neighbors(*index).for_each(|e| {
+                let neighbour = self.brain.node_weight(e).unwrap();
+                if let Neuron::Output(_) = neighbour {
+                    return;
+                }
+                let weight = self
+                    .brain
+                    .edge_weight(self.brain.find_edge(*index, e).unwrap())
+                    .unwrap();
+                value += neighbour.get_value() * weight;
             });
+            let node = self.brain.node_weight_mut(*index).unwrap();
+            node.set_value(value.tanh());
+        });
 
-        // debug_warn!("init: {:?}", init);
-        // re-calculate intermidiate states including previous values
-        self.intermidiate
-            .iter_mut()
-            .for_each(|(inner, (connections, value))| {
-                // debug_warn!("inner: {:?}", inner);
-                *value = connections
-                    .iter()
-                    .fold(0.0, |acc, (from, weight)| match from {
-                        FromConn::Input(input) => acc + self.state[input] * weight,
-                        FromConn::Inner(inner) => acc + init[inner] * weight,
-                    })
-                    .tanh();
+        self.outputs.iter().for_each(|(output, index)| {
+            debug_warn!("output: {:?}", output);
+            let mut value = 0.0;
+            self.brain.neighbors(*index).for_each(|e| {
+                let neighbour = self.brain.node_weight(e).unwrap();
+                let weight = self
+                    .brain
+                    .edge_weight(self.brain.find_edge(*index, e).unwrap())
+                    .unwrap();
+                value += neighbour.get_value() * weight;
             });
-
-        // debug_warn!("intermidiate: {:?}", self.intermidiate);
-        self.result
-            .iter_mut()
-            .for_each(|(output, (connections, value))| {
-                // debug_warn!("output: {:?}", output);
-                *value = connections
-                    .iter()
-                    .fold(0.0, |acc, (from, weight)| match from {
-                        FromConn::Input(input) => acc + self.state[input] * weight,
-                        FromConn::Inner(inner) => acc + self.intermidiate[inner].1 * weight,
-                    })
-                    .tanh();
-            });
-
-        // debug_warn!("result: {:?}", self.result);
+            let node = self.brain.node_weight_mut(*index).unwrap();
+            node.set_value(value.tanh());
+        });
     }
 
     fn intention(&self) -> Intention {
-        self.result
+        self.outputs
             .iter()
-            .fold(
-                Intention::new(self.facing),
-                |acc, (output, (_, value))| match output {
-                    Output::MoveRandom => {
-                        if value > &0.5 {
+            .fold(Intention::new(self.facing), |acc, (output, index)| {
+                let value = self.brain.node_weight(*index).unwrap().get_value();
+                match output {
+                    OutputType::MoveRandom => {
+                        if value > 0.5 {
                             Intention::new(
                                 Direction::from_repr(rand::thread_rng().gen_range(0..4)).unwrap(),
                             )
@@ -469,49 +518,49 @@ impl Cell {
                             acc
                         }
                     }
-                    Output::MoveForward => {
-                        if value > &0.5 {
+                    OutputType::MoveForward => {
+                        if value > 0.5 {
                             Intention::new(self.facing)
                         } else {
                             acc
                         }
                     }
-                    Output::MoveReverse => {
-                        if value > &0.5 {
+                    OutputType::MoveReverse => {
+                        if value > 0.5 {
                             Intention::new(self.facing.reverse())
                         } else {
                             acc
                         }
                     }
-                    Output::MoveLR => {
-                        if value > &0.5 {
+                    OutputType::MoveLR => {
+                        if value > 0.5 {
                             Intention::new(self.facing.left())
-                        } else if value < &-0.5 {
+                        } else if value < -0.5 {
                             Intention::new(self.facing.right())
                         } else {
                             acc
                         }
                     }
-                    Output::MoveEW => {
-                        if value > &0.5 {
+                    OutputType::MoveEW => {
+                        if value > 0.5 {
                             Intention::new(Direction::East)
-                        } else if value < &-0.5 {
+                        } else if value < -0.5 {
                             Intention::new(Direction::West)
                         } else {
                             acc
                         }
                     }
-                    Output::MoveNS => {
-                        if value > &0.5 {
+                    OutputType::MoveNS => {
+                        if value > 0.5 {
                             Intention::new(Direction::North)
-                        } else if value < &-0.5 {
+                        } else if value < -0.5 {
                             Intention::new(Direction::South)
                         } else {
                             acc
                         }
                     }
-                },
-            )
+                }
+            })
     }
 }
 
@@ -538,27 +587,16 @@ impl World {
         let size_dist = Uniform::from(0..state.world_size);
         let pop_size = ((state.world_size as u32).pow(2) as f32 * state.pop_percent) as usize;
 
-        // debug_warn!("pop_size: {}", pop_size);
+        debug_warn!("pop_size: {}", pop_size);
 
         let mut coords = HashSet::with_capacity(pop_size);
         while coords.len() < pop_size {
             coords.insert((size_dist.sample(&mut rng), size_dist.sample(&mut rng)));
         }
 
-        /* debug_warn!(
-            "coords: {:?}, sample: {:?}",
-            coords.len(),
-            coords.iter().next()
-        ); */
-
         let mut population = HashMap::with_capacity(pop_size);
         for (x, y) in coords {
-            let mut genome = Vec::with_capacity(state.genome_size as usize);
-            for _ in 0..state.genome_size {
-                genome.push(valid_connection(state));
-            }
-
-            population.insert(Coord::new(x, y), Cell::new(genome));
+            population.insert(Coord::new(x, y), Cell::new(state));
         }
 
         Self {
@@ -581,24 +619,35 @@ impl World {
         for (coord, _) in &self.population {
             grid[coord.x as usize][coord.y as usize] = true;
         }
-        // debug_warn!("grid: {:?}", grid);
+        /* debug_warn!(
+            "grid: {:?}",
+            grid.clone()
+                .iter()
+                .map(|x| x
+                    .clone()
+                    .iter()
+                    .map(|y| if *y { 1 } else { 0 })
+                    .collect::<Vec<_>>())
+                .collect::<Vec<_>>()
+        ); */
 
         let slice = self.population.keys().cloned().collect::<Vec<_>>();
 
         slice.iter().for_each(|coord| {
-            // debug_warn!("coord: {:?}", coord);
+            debug_warn!("coord: {:?}", coord.clone());
             let mut cell = self.population.remove(coord).unwrap();
+            debug_warn!("cell: {:?}", cell.clone());
             cell.update(
                 &grid,
                 self.time as f32 / self.state.time_steps as f32,
                 coord.clone(),
             );
-            // debug_warn!("updated cell: {:?}", cell);
+            debug_warn!("updated cell: {:?}", cell.clone());
             cell.calc();
-            // debug_warn!("calced cell: {:?}", cell);
+            debug_warn!("calced cell: {:?}", cell.clone());
 
             let res = cell.intention();
-            // debug_warn!("intention: {:?}", res);
+            debug_warn!("intention: {:?}", res.clone());
             let new_coord = coord.neighbour(
                 (self.state.world_size, self.state.world_size),
                 res.direction,
@@ -619,29 +668,10 @@ impl World {
                     self.population.insert(coord.clone(), cell);
                 }
             }
-            // debug_warn!("cell moved");
+            debug_warn!("cell moved");
         });
         self.time += 1;
     }
-}
-
-fn valid_connection(state: &Render) -> Connection {
-    let mut rng = rand::thread_rng();
-    let in_type: bool = rng.gen();
-    let from = if in_type {
-        FromConn::Input(Input::from_repr(rng.gen_range(0..Input::COUNT)).unwrap())
-    } else {
-        FromConn::Inner(rng.gen_range(0..INNER_STATES))
-    };
-    let out_type: bool = rng.gen();
-    let to = if out_type {
-        ToConn::Output(Output::from_repr(rng.gen_range(0..Output::COUNT)).unwrap())
-    } else {
-        ToConn::Inner(rng.gen_range(0..INNER_STATES))
-    };
-    let weight: f32 = rng.gen_range((0.0 - 1.0)..1.0) * (state.weight_factor as f32);
-
-    Connection { from, to, weight }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -718,7 +748,7 @@ fn main() {
             set_render(state());
             let state = state.get();
 
-            // debug_warn!("state: {:?}", state);
+            debug_warn!("state: {:?}", state);
 
             let console = document().get_element_by_id("console").unwrap();
             console.class_list().remove_1("hidden").unwrap();
@@ -748,11 +778,11 @@ fn main() {
         };
 
         let play_sim = move |_| {
-            for i in 0..state.get().time_steps {
-                // debug_warn!("step {}", i);
+            for i in 0..1 {
+                debug_warn!("step {}", i);
                 world().step();
             }
-            // debug_warn!("done");
+            debug_warn!("done");
             display_world(&state.get(), world().get_map(), canvas_ref);
         };
 
