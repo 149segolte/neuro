@@ -59,13 +59,13 @@ enum OutputType {
 struct Output(OutputType, i16);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum Neuron {
+enum Node {
     Input(Input),
     Output(Output),
     Inner(Inner),
 }
 
-impl Neuron {
+impl Node {
     fn get_value(&self) -> f32 {
         match self {
             Self::Input(i) => i.1 as f32 / i16::MIN as f32,
@@ -85,8 +85,8 @@ impl Neuron {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Connection {
-    from: Neuron,
-    to: Neuron,
+    from: Node,
+    to: Node,
     weight: f32,
 }
 
@@ -94,21 +94,21 @@ fn valid_connection(state: &Render) -> Connection {
     let mut rng = rand::thread_rng();
     let in_type: bool = rng.gen();
     let from = if in_type {
-        Neuron::Input(Input(
+        Node::Input(Input(
             InputType::from_repr(rng.gen_range(0..InputType::COUNT)).unwrap(),
             0,
         ))
     } else {
-        Neuron::Inner(Inner(rng.gen_range(0..INNER_STATES), 0))
+        Node::Inner(Inner(rng.gen_range(0..INNER_STATES), 0))
     };
     let out_type: bool = rng.gen();
     let to = if out_type {
-        Neuron::Output(Output(
+        Node::Output(Output(
             OutputType::from_repr(rng.gen_range(0..OutputType::COUNT)).unwrap(),
             0,
         ))
     } else {
-        Neuron::Inner(Inner(rng.gen_range(0..INNER_STATES), 0))
+        Node::Inner(Inner(rng.gen_range(0..INNER_STATES), 0))
     };
     let weight: f32 = rng.gen_range((0.0 - 1.0)..1.0) * (state.weight_factor as f32);
 
@@ -237,9 +237,117 @@ impl Intention {
     }
 }
 
+fn new_brain(
+    params: &Render,
+) -> (
+    StableUnGraph<Node, f32>,
+    HashMap<InputType, NodeIndex>,
+    HashMap<InnerType, NodeIndex>,
+    HashMap<OutputType, NodeIndex>,
+) {
+    let mut graph = StableUnGraph::<Node, f32>::default();
+    let mut inputs = HashMap::new();
+    let mut internals = HashMap::new();
+    let mut outputs = HashMap::new();
+
+    let mut genome = Vec::with_capacity(params.genome_size as usize);
+    for _ in 0..params.genome_size {
+        genome.push(valid_connection(params));
+    }
+
+    for gene in genome.iter() {
+        match gene.from {
+            Node::Input(input) => {
+                if inputs.get(&input.0).is_none() {
+                    let node = graph.add_node(Node::Input(input));
+                    inputs.insert(input.0, node);
+                }
+            }
+            Node::Inner(inner) => {
+                if internals.get(&inner.0).is_none() {
+                    let node = graph.add_node(Node::Inner(inner));
+                    internals.insert(inner.0, node);
+                }
+            }
+            _ => unreachable!(),
+        }
+
+        match gene.to {
+            Node::Inner(inner) => {
+                if internals.get(&inner.0).is_none() {
+                    let node = graph.add_node(Node::Inner(inner));
+                    internals.insert(inner.0, node);
+                }
+            }
+            Node::Output(output) => {
+                if outputs.get(&output.0).is_none() {
+                    let node = graph.add_node(Node::Output(output));
+                    outputs.insert(output.0, node);
+                }
+            }
+            _ => unreachable!(),
+        }
+
+        let from = match gene.from {
+            Node::Input(input) => inputs.get(&input.0).copied().unwrap(),
+            Node::Inner(inner) => internals.get(&inner.0).copied().unwrap(),
+            _ => unreachable!(),
+        };
+        let to = match gene.to {
+            Node::Inner(inner) => internals.get(&inner.0).copied().unwrap(),
+            Node::Output(output) => outputs.get(&output.0).copied().unwrap(),
+            _ => unreachable!(),
+        };
+        graph.add_edge(from, to, gene.weight);
+    }
+
+    inputs.retain(|_, i| {
+        let paths = dijkstra(&graph, *i, None, |_| 1);
+        let mut valid = paths.keys();
+        let res = valid.any(|n| match graph.node_weight(*n).unwrap() {
+            Node::Output(_) => true,
+            _ => false,
+        });
+        if !res {
+            graph.remove_node(*i);
+        }
+        res
+    });
+    internals.retain(|_, i| {
+        let paths = dijkstra(&graph, *i, None, |_| 1);
+        let mut valid = paths.keys();
+        let ins = valid.any(|n| match graph.node_weight(*n).unwrap() {
+            Node::Input(_) => true,
+            _ => false,
+        });
+        let outs = valid.any(|n| match graph.node_weight(*n).unwrap() {
+            Node::Output(_) => true,
+            _ => false,
+        });
+        if !ins || !outs {
+            graph.remove_node(*i);
+        }
+        ins && outs
+    });
+    outputs.retain(|_, i| {
+        let paths = dijkstra(&graph, *i, None, |_| 1);
+        let mut valid = paths.keys();
+        let res = valid.any(|n| match graph.node_weight(*n).unwrap() {
+            Node::Inner(_) => true,
+            _ => false,
+        });
+        if !res {
+            graph.remove_node(*i);
+        }
+        res
+    });
+
+    (graph, inputs, internals, outputs)
+}
+
 #[derive(Debug, Clone)]
-struct Cell {
-    brain: StableUnGraph<Neuron, f32>,
+struct Neuron {
+    brain: StableUnGraph<Node, f32>,
     inputs: HashMap<InputType, NodeIndex>,
     internals: HashMap<InnerType, NodeIndex>,
     outputs: HashMap<OutputType, NodeIndex>,
@@ -247,107 +355,25 @@ struct Cell {
     last_move: (u16, u16),
 }
 
-impl Cell {
+impl Neuron {
     fn new(params: &Render) -> Self {
-        let mut graph = StableUnGraph::<Neuron, f32>::default();
-        let mut inputs = HashMap::new();
-        let mut internals = HashMap::new();
-        let mut outputs = HashMap::new();
-
-        let mut genome = Vec::with_capacity(params.genome_size as usize);
-        for _ in 0..params.genome_size {
-            genome.push(valid_connection(params));
+        let brain;
+        let inputs;
+        let internals;
+        let outputs;
+        loop {
+            let res = new_brain(params);
+            if res.0.edge_count() > 0 {
+                brain = res.0;
+                inputs = res.1;
+                internals = res.2;
+                outputs = res.3;
+                break;
+            }
         }
-
-        for gene in genome.iter() {
-            match gene.from {
-                Neuron::Input(input) => {
-                    if inputs.get(&input.0).is_none() {
-                        let node = graph.add_node(Neuron::Input(input));
-                        inputs.insert(input.0, node);
-                    }
-                }
-                Neuron::Inner(inner) => {
-                    if internals.get(&inner.0).is_none() {
-                        let node = graph.add_node(Neuron::Inner(inner));
-                        internals.insert(inner.0, node);
-                    }
-                }
-                _ => unreachable!(),
-            }
-
-            match gene.to {
-                Neuron::Inner(inner) => {
-                    if internals.get(&inner.0).is_none() {
-                        let node = graph.add_node(Neuron::Inner(inner));
-                        internals.insert(inner.0, node);
-                    }
-                }
-                Neuron::Output(output) => {
-                    if outputs.get(&output.0).is_none() {
-                        let node = graph.add_node(Neuron::Output(output));
-                        outputs.insert(output.0, node);
-                    }
-                }
-                _ => unreachable!(),
-            }
-
-            let from = match gene.from {
-                Neuron::Input(input) => inputs.get(&input.0).copied().unwrap(),
-                Neuron::Inner(inner) => internals.get(&inner.0).copied().unwrap(),
-                _ => unreachable!(),
-            };
-            let to = match gene.to {
-                Neuron::Inner(inner) => internals.get(&inner.0).copied().unwrap(),
-                Neuron::Output(output) => outputs.get(&output.0).copied().unwrap(),
-                _ => unreachable!(),
-            };
-            graph.add_edge(from, to, gene.weight);
-        }
-
-        inputs.retain(|_, i| {
-            let paths = dijkstra(&graph, *i, None, |_| 1);
-            let mut valid = paths.keys();
-            let res = valid.any(|n| match graph.node_weight(*n).unwrap() {
-                Neuron::Output(_) => true,
-                _ => false,
-            });
-            if !res {
-                graph.remove_node(*i);
-            }
-            res
-        });
-        internals.retain(|_, i| {
-            let paths = dijkstra(&graph, *i, None, |_| 1);
-            let mut valid = paths.keys();
-            let ins = valid.any(|n| match graph.node_weight(*n).unwrap() {
-                Neuron::Input(_) => true,
-                _ => false,
-            });
-            let outs = valid.any(|n| match graph.node_weight(*n).unwrap() {
-                Neuron::Output(_) => true,
-                _ => false,
-            });
-            if !ins || !outs {
-                graph.remove_node(*i);
-            }
-            ins && outs
-        });
-        outputs.retain(|_, i| {
-            let paths = dijkstra(&graph, *i, None, |_| 1);
-            let mut valid = paths.keys();
-            let res = valid.any(|n| match graph.node_weight(*n).unwrap() {
-                Neuron::Inner(_) => true,
-                _ => false,
-            });
-            if !res {
-                graph.remove_node(*i);
-            }
-            res
-        });
 
         Self {
-            brain: graph,
+            brain,
             inputs,
             internals,
             outputs,
@@ -474,7 +500,7 @@ impl Cell {
             let mut value = 0.0;
             self.brain.neighbors(*index).for_each(|e| {
                 let neighbour = self.brain.node_weight(e).unwrap();
-                if let Neuron::Output(_) = neighbour {
+                if let Node::Output(_) = neighbour {
                     return;
                 }
                 let weight = self
@@ -487,8 +513,7 @@ impl Cell {
             node.set_value(value.tanh());
         });
 
-        self.outputs.iter().for_each(|(output, index)| {
-            debug_warn!("output: {:?}", output);
+        self.outputs.iter().for_each(|(_, index)| {
             let mut value = 0.0;
             self.brain.neighbors(*index).for_each(|e| {
                 let neighbour = self.brain.node_weight(e).unwrap();
@@ -568,7 +593,7 @@ impl Cell {
 struct World {
     state: Render,
     time: u32,
-    population: HashMap<Coord, Cell>,
+    population: HashMap<Coord, Neuron>,
 }
 
 impl Default for World {
@@ -596,7 +621,7 @@ impl World {
 
         let mut population = HashMap::with_capacity(pop_size);
         for (x, y) in coords {
-            population.insert(Coord::new(x, y), Cell::new(state));
+            population.insert(Coord::new(x, y), Neuron::new(state));
         }
 
         Self {
@@ -635,18 +660,16 @@ impl World {
 
         slice.iter().for_each(|coord| {
             debug_warn!("coord: {:?}", coord.clone());
-            let mut cell = self.population.remove(coord).unwrap();
-            debug_warn!("cell: {:?}", cell.clone());
-            cell.update(
+            let mut neuron = self.population.remove(coord).unwrap();
+            debug_warn!("neuron: {:?}", neuron.clone());
+            neuron.update(
                 &grid,
                 self.time as f32 / self.state.time_steps as f32,
                 coord.clone(),
             );
-            debug_warn!("updated cell: {:?}", cell.clone());
-            cell.calc();
-            debug_warn!("calced cell: {:?}", cell.clone());
+            neuron.calc();
 
-            let res = cell.intention();
+            let res = neuron.intention();
             debug_warn!("intention: {:?}", res.clone());
             let new_coord = coord.neighbour(
                 (self.state.world_size, self.state.world_size),
@@ -656,19 +679,19 @@ impl World {
             match new_coord {
                 Some(new_coord) => {
                     if self.population.contains_key(&new_coord) {
-                        cell.try_move(None);
-                        self.population.insert(coord.clone(), cell);
+                        neuron.try_move(None);
+                        self.population.insert(coord.clone(), neuron);
                     } else {
-                        cell.try_move(Some(res.direction));
-                        self.population.insert(new_coord, cell);
+                        neuron.try_move(Some(res.direction));
+                        self.population.insert(new_coord, neuron);
                     }
                 }
                 None => {
-                    cell.try_move(None);
-                    self.population.insert(coord.clone(), cell);
+                    neuron.try_move(None);
+                    self.population.insert(coord.clone(), neuron);
                 }
             }
-            debug_warn!("cell moved");
+            debug_warn!("neuron moved");
         });
         self.time += 1;
     }
@@ -698,6 +721,8 @@ impl Default for Render {
 }
 
 fn display_world(state: &Render, map: Vec<Coord>, canvas: NodeRef<leptos::html::Canvas>) {
+    debug_warn!("display_world");
+    debug_warn!("map: {:?}", map.clone());
     let canvas = canvas.get().unwrap();
     let ctx = canvas
         .get_context("2d")
@@ -708,6 +733,7 @@ fn display_world(state: &Render, map: Vec<Coord>, canvas: NodeRef<leptos::html::
     ctx.clear_rect(0.0, 0.0, canvas.width() as f64, canvas.height() as f64);
 
     let pixel = move |x: u16, y: u16| {
+        let y = state.world_size - y - 1;
         ctx.fill_rect(
             x as f64 * canvas.width() as f64 / state.world_size as f64,
             y as f64 * canvas.height() as f64 / state.world_size as f64,
@@ -721,10 +747,23 @@ fn display_world(state: &Render, map: Vec<Coord>, canvas: NodeRef<leptos::html::
     }
 }
 
+fn clear_canvas(canvas: NodeRef<leptos::html::Canvas>) {
+    let canvas = canvas.get().unwrap();
+    let ctx = canvas
+        .get_context("2d")
+        .unwrap()
+        .unwrap()
+        .dyn_into::<CanvasRenderingContext2d>()
+        .unwrap();
+    ctx.clear_rect(0.0, 0.0, canvas.width() as f64, canvas.height() as f64);
+}
+
 fn main() {
     mount_to_body(|cx| {
         let (canvas_size, _set_canvas_size) = create_signal(cx, 720);
+        let (i, set_i) = create_signal(cx, -1i32);
         let (world, set_world) = create_signal(cx, World::default());
+        let (history, set_history) = create_signal(cx, vec![]);
 
         let (state, set_state) = create_signal(cx, Render::default());
         set_state(Render {
@@ -744,11 +783,36 @@ fn main() {
 
         let canvas_ref = create_node_ref::<leptos::html::Canvas>(cx);
 
+        let animation = move || {
+            debug_warn!("animation");
+            let i = i();
+            debug_warn!("i: {:?}", i);
+
+            if i < 0 {
+                return false;
+            } else if i >= history().len() as i32 {
+                set_i(0);
+            }
+
+            let render = render();
+            display_world(
+                &render,
+                history.with(|hist: &Vec<Vec<Coord>>| hist[i as usize].clone()),
+                canvas_ref.clone(),
+            );
+
+            return true;
+        };
+
         let compute = move |_| {
             set_render(state());
             let state = state.get();
 
             debug_warn!("state: {:?}", state);
+
+            set_i(-1);
+            set_history(vec![]);
+            clear_canvas(canvas_ref.clone());
 
             let console = document().get_element_by_id("console").unwrap();
             console.class_list().remove_1("hidden").unwrap();
@@ -768,22 +832,20 @@ fn main() {
             )
             .as_str());
 
-            set_world(World::new(&state));
+            set_world.set(World::new(&state));
 
             log("World loaded!");
 
-            display_world(&state, world().get_map(), canvas_ref);
+            set_history.update(|hist| hist.push(world.with(|w| w.get_map())));
 
             console.class_list().add_1("hidden").unwrap();
-        };
 
-        let play_sim = move |_| {
-            for i in 0..1 {
+            for i in 0..state.time_steps {
                 debug_warn!("step {}", i);
-                world().step();
+                set_world.update(|w| w.step());
+                set_history.update(|hist| hist.push(world.with(|w| w.get_map())));
             }
             debug_warn!("done");
-            display_world(&state.get(), world().get_map(), canvas_ref);
         };
 
         view! { cx,
@@ -872,11 +934,33 @@ fn main() {
                                 "Compute"
                             </button>
 
-                            <button on:click=play_sim
+                            <button prop:disabled=move || !compute_state()
+                                on:click=move |_| {
+                                        if i() <= 0 {
+                                            set_i(state.with(|state| state.time_steps) as i32);
+                                        } else {
+                                            set_i(i() - 1);
+                                        }
+                                        debug_warn!("i = {}", i());
+                                    }
                                 class="bg-green-400 w-fit mt-2 py-2 px-4 text-lg rounded-full disabled:bg-gray-500 disabled:text-white disabled:opacity-80 hover:bg-green-300 transition-all">
-                                "Play"
+                                "Backward"
+                            </button>
+
+                            <button prop:disabled=move || !compute_state()
+                                on:click=move |_| {
+                                        if i() >= state.with(|state| state.time_steps) as i32 - 1 {
+                                            set_i(0);
+                                        } else {
+                                            set_i(i() + 1);
+                                        }
+                                        debug_warn!("i = {}", i());
+                                    }
+                                class="bg-green-400 w-fit mt-2 py-2 px-4 text-lg rounded-full disabled:bg-gray-500 disabled:text-white disabled:opacity-80 hover:bg-green-300 transition-all">
+                                "Forward"
                             </button>
                         </div>
+                        Animation status: {animation}, i = {i}
                     </div>
 
                     <div class="relative mb-8 lg:m-0 aspect-square border shadow-2xl rounded-lg overflow-hidden">
