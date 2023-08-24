@@ -761,9 +761,9 @@ fn clear_canvas(canvas: NodeRef<leptos::html::Canvas>) {
 fn main() {
     mount_to_body(|cx| {
         let (canvas_size, _set_canvas_size) = create_signal(cx, 720);
-        let (i, set_i) = create_signal(cx, -1i32);
+        let (time, set_time) = create_signal(cx, 0usize);
         let (world, set_world) = create_signal(cx, World::default());
-        let (history, set_history) = create_signal(cx, vec![]);
+        let (history, set_history) = create_signal(cx, Vec::<Vec<Coord>>::new());
 
         let (state, set_state) = create_signal(cx, Render::default());
         set_state(Render {
@@ -783,25 +783,33 @@ fn main() {
 
         let canvas_ref = create_node_ref::<leptos::html::Canvas>(cx);
 
-        let animation = move || {
+        let animation = move |reset: bool, direction: bool| {
             debug_warn!("animation");
-            let i = i();
-            debug_warn!("i: {:?}", i);
-
-            if i < 0 {
-                return false;
-            } else if i >= history().len() as i32 {
-                set_i(0);
+            let mut i = time.get();
+            if reset {
+                set_time(0);
+            } else {
+                if direction {
+                    if i < history().len() - 1 {
+                        i += 1;
+                    } else {
+                        i = 0;
+                    }
+                } else {
+                    i = match i.checked_sub(1) {
+                        Some(i) => i,
+                        None => history().len() - 1,
+                    }
+                }
+                set_time(i);
+                debug_warn!("i: {:?}", i);
             }
 
-            let render = render();
             display_world(
-                &render,
-                history.with(|hist: &Vec<Vec<Coord>>| hist[i as usize].clone()),
+                &render.get(),
+                history.with(|hist| hist[i].clone()),
                 canvas_ref.clone(),
             );
-
-            return true;
         };
 
         let compute = move |_| {
@@ -810,7 +818,7 @@ fn main() {
 
             debug_warn!("state: {:?}", state);
 
-            set_i(-1);
+            set_time(0);
             set_history(vec![]);
             clear_canvas(canvas_ref.clone());
 
@@ -845,6 +853,8 @@ fn main() {
                 set_world.update(|w| w.step());
                 set_history.update(|hist| hist.push(world.with(|w| w.get_map())));
             }
+
+            animation(true, true);
             debug_warn!("done");
         };
 
@@ -933,34 +943,40 @@ fn main() {
                                 class="bg-green-400 w-fit mt-2 py-2 px-4 text-lg rounded-full disabled:bg-gray-500 disabled:text-white disabled:opacity-80 hover:bg-green-300 transition-all">
                                 "Compute"
                             </button>
-
-                            <button prop:disabled=move || !compute_state()
-                                on:click=move |_| {
-                                        if i() <= 0 {
-                                            set_i(state.with(|state| state.time_steps) as i32);
-                                        } else {
-                                            set_i(i() - 1);
-                                        }
-                                        debug_warn!("i = {}", i());
-                                    }
-                                class="bg-green-400 w-fit mt-2 py-2 px-4 text-lg rounded-full disabled:bg-gray-500 disabled:text-white disabled:opacity-80 hover:bg-green-300 transition-all">
-                                "Backward"
-                            </button>
-
-                            <button prop:disabled=move || !compute_state()
-                                on:click=move |_| {
-                                        if i() >= state.with(|state| state.time_steps) as i32 - 1 {
-                                            set_i(0);
-                                        } else {
-                                            set_i(i() + 1);
-                                        }
-                                        debug_warn!("i = {}", i());
-                                    }
-                                class="bg-green-400 w-fit mt-2 py-2 px-4 text-lg rounded-full disabled:bg-gray-500 disabled:text-white disabled:opacity-80 hover:bg-green-300 transition-all">
-                                "Forward"
-                            </button>
                         </div>
-                        Animation status: {animation}, i = {i}
+
+                        <div class="flex flex-row gap-0 bg-neutral-50 rounded-lg border">
+                            <div class="flex flex-col gap-0 border-r">
+                                <span class="pt-2 px-2">Generation: 0</span>
+                                <span class="py-2 px-2">Time: {time}</span>
+                            </div>
+                            <div class="h-full">
+                                <div class="h-1/2"></div>
+                                <div class="h-1/2 flex flex-row gap-0 text-center">
+                                    <button prop:disabled=move || !compute_state()
+                                        on:click=move |_| {
+                                                animation(false, false);
+                                            }
+                                        class="p-2 border-r">
+                                        "<"
+                                    </button>
+                                    <button prop:disabled=move || !compute_state()
+                                        on:click=move |_| {
+                                            }
+                                        class="p-2 border-r">
+                                        "||"
+                                    </button>
+                                    <button prop:disabled=move || !compute_state()
+                                        on:click=move |_| {
+                                                animation(false, true);
+                                            }
+                                        class="p-2">
+                                        ">"
+                                    </button>
+                                </div>
+                            </div>
+                            <div></div>
+                        </div>
                     </div>
 
                     <div class="relative mb-8 lg:m-0 aspect-square border shadow-2xl rounded-lg overflow-hidden">
