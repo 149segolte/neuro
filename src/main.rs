@@ -762,6 +762,7 @@ fn main() {
     mount_to_body(|cx| {
         let (canvas_size, _set_canvas_size) = create_signal(cx, 720);
         let (time, set_time) = create_signal(cx, 0usize);
+        let (paused, set_paused) = create_signal(cx, true);
         let (world, set_world) = create_signal(cx, World::default());
         let (history, set_history) = create_signal(cx, Vec::<Vec<Coord>>::new());
 
@@ -945,35 +946,90 @@ fn main() {
                             </button>
                         </div>
 
-                        <div class="flex flex-row gap-0 bg-neutral-50 rounded-lg border">
+                        <div class="flex flex-row gap-0 bg-neutral-50 rounded-lg border justify-center items-center">
                             <div class="flex flex-col gap-0 border-r">
-                                <span class="pt-2 px-2">Generation: 0</span>
-                                <span class="py-2 px-2">Time: {time}</span>
+                                <span class="pt-2 px-2 text-2xl">Generation: 0</span>
+                                <span class="py-2 px-2 text-2xl">Time: {time}</span>
                             </div>
-                            <div class="h-full">
-                                <div class="h-1/2"></div>
-                                <div class="h-1/2 flex flex-row gap-0 text-center">
+                            <div class="h-full grid grid-cols-3 gap-0">
+                                    <button prop:disabled=move || !compute_state()
+                                        on:click=move |_| {
+                                                animation(true, true);
+                                            }
+                                        class="h-full p-2 border-r border-b">
+                                        <svg class="w-8 aspect-square" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                            <path d="M19 19L12.7071 12.7071C12.3166 12.3166 12.3166 11.6834 12.7071 11.2929L19 5" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                                            <path d="M11 19L4.70711 12.7071C4.31658 12.3166 4.31658 11.6834 4.70711 11.2929L11 5" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                                        </svg>
+                                    </button>
+                                    <Show
+                                        when=move || paused()
+                                        fallback=move |cx| view! { cx,
+                                            <button prop:disabled=move || !compute_state()
+                                                on:click=move |_| set_paused(true)
+                                                class="h-full p-2 border-b">
+                                                <svg class="h-full" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                                    <rect x="6" y="6" width="4" height="12" rx="1" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                                                    <rect x="14" y="6" width="4" height="12" rx="1" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                                                </svg>
+                                            </button>
+                                        } >
+                                        <button prop:disabled=move || !compute_state()
+                                            on:click=move |_| set_paused(false)
+                                            class="h-full p-2 border-b">
+                                            <svg class="h-full" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                                <path d="M8 17.1783V6.82167C8 6.03258 8.87115 5.55437 9.53688 5.97801L17.6742 11.1563C18.2917 11.5493 18.2917 12.4507 17.6742 12.8437L9.53688 18.022C8.87115 18.4456 8 17.9674 8 17.1783Z" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                                            </svg>
+                                        </button>
+                                    </Show>
+                                    <button prop:disabled=move || !compute_state()
+                                        on:click=move |_| {
+                                                animation(true, false);
+                                            }
+                                        class="h-full p-2 border-l border-b">
+                                        <svg class="h-full" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                            <path d="M5 19L11.2929 12.7071C11.6834 12.3166 11.6834 11.6834 11.2929 11.2929L5 5" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                                            <path d="M13 19L19.2929 12.7071C19.6834 12.3166 19.6834 11.6834 19.2929 11.2929L13 5" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                                        </svg>
+                                    </button>
                                     <button prop:disabled=move || !compute_state()
                                         on:click=move |_| {
                                                 animation(false, false);
                                             }
-                                        class="p-2 border-r">
-                                        "<"
+                                        class="h-full p-2 border-r">
+                                            <svg class="h-full" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                                <path d="M15.5 19L9.20711 12.7071C8.81658 12.3166 8.81658 11.6834 9.20711 11.2929L15.5 5" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                                            </svg>
                                     </button>
-                                    <button prop:disabled=move || !compute_state()
-                                        on:click=move |_| {
-                                            }
-                                        class="p-2 border-r">
-                                        "||"
-                                    </button>
+                                    <Show
+                                        when=move || paused()
+                                        fallback=move |cx| view! { cx,
+                                            <button prop:disabled=move || !compute_state()
+                                                on:click=move |_| set_paused(true)
+                                                class="h-full p-2">
+                                                <svg class="h-full" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                                    <rect x="6" y="6" width="4" height="12" rx="1" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                                                    <rect x="14" y="6" width="4" height="12" rx="1" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                                                </svg>
+                                            </button>
+                                        } >
+                                        <button prop:disabled=move || !compute_state()
+                                            on:click=move |_| set_paused(false)
+                                            class="h-full p-2">
+                                            <svg class="h-full" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                                <path d="M8 17.1783V6.82167C8 6.03258 8.87115 5.55437 9.53688 5.97801L17.6742 11.1563C18.2917 11.5493 18.2917 12.4507 17.6742 12.8437L9.53688 18.022C8.87115 18.4456 8 17.9674 8 17.1783Z" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                                            </svg>
+                                        </button>
+                                    </Show>
                                     <button prop:disabled=move || !compute_state()
                                         on:click=move |_| {
                                                 animation(false, true);
                                             }
-                                        class="p-2">
-                                        ">"
+                                        class="h-full p-2 border-l">
+                                        <svg class="h-full" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                            <path d="M9.5 5L15.7929 11.2929C16.1834 11.6834 16.1834 12.3166 15.7929 12.7071L9.5 19" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                                        </svg>
                                     </button>
-                                </div>
                             </div>
                             <div></div>
                         </div>

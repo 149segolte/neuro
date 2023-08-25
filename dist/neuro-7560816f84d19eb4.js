@@ -364,6 +364,12 @@ function __wbg_get_imports() {
         const ret = getObject(arg0).createElement(v0);
         return addHeapObject(ret);
     }, arguments) };
+    imports.wbg.__wbg_createElementNS_119acf9e82482041 = function() { return handleError(function (arg0, arg1, arg2, arg3, arg4) {
+        var v0 = getCachedStringFromWasm0(arg1, arg2);
+        var v1 = getCachedStringFromWasm0(arg3, arg4);
+        const ret = getObject(arg0).createElementNS(v0, v1);
+        return addHeapObject(ret);
+    }, arguments) };
     imports.wbg.__wbg_createTextNode_2fd22cd7e543f938 = function(arg0, arg1, arg2) {
         var v0 = getCachedStringFromWasm0(arg1, arg2);
         const ret = getObject(arg0).createTextNode(v0);
@@ -595,16 +601,16 @@ function __wbg_get_imports() {
         const ret = wasm.memory;
         return addHeapObject(ret);
     };
-    imports.wbg.__wbindgen_closure_wrapper231 = function(arg0, arg1, arg2) {
-        const ret = makeMutClosure(arg0, arg1, 59, __wbg_adapter_28);
+    imports.wbg.__wbindgen_closure_wrapper257 = function(arg0, arg1, arg2) {
+        const ret = makeMutClosure(arg0, arg1, 89, __wbg_adapter_28);
         return addHeapObject(ret);
     };
-    imports.wbg.__wbindgen_closure_wrapper233 = function(arg0, arg1, arg2) {
-        const ret = makeMutClosure(arg0, arg1, 59, __wbg_adapter_28);
+    imports.wbg.__wbindgen_closure_wrapper259 = function(arg0, arg1, arg2) {
+        const ret = makeMutClosure(arg0, arg1, 89, __wbg_adapter_28);
         return addHeapObject(ret);
     };
-    imports.wbg.__wbindgen_closure_wrapper410 = function(arg0, arg1, arg2) {
-        const ret = makeMutClosure(arg0, arg1, 156, __wbg_adapter_33);
+    imports.wbg.__wbindgen_closure_wrapper471 = function(arg0, arg1, arg2) {
+        const ret = makeMutClosure(arg0, arg1, 187, __wbg_adapter_33);
         return addHeapObject(ret);
     };
 
@@ -645,7 +651,7 @@ async function __wbg_init(input) {
     if (wasm !== undefined) return wasm;
 
     if (typeof input === 'undefined') {
-        input = new URL('neuro-890706dc85da89ed_bg.wasm', import.meta.url);
+        input = new URL('neuro-7560816f84d19eb4_bg.wasm', import.meta.url);
     }
     const imports = __wbg_get_imports();
 
