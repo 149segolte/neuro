@@ -1,39 +1,12 @@
 <!DOCTYPE html><html><head>
-    <script type="module">import init from '/neuro-1afef4dfd044d1f6.js';init('/neuro-1afef4dfd044d1f6_bg.wasm');</script>
+    <script type="module">import init from '/neuro-7492bb25a035ad84.js';init('/neuro-7492bb25a035ad84_bg.wasm');</script>
     <link rel="icon" href="/favicon-e9cbd8f50cc65bf2.ico">
     <link rel="stylesheet" href="/output-f95d522dcb05e24.css">
 
-<link rel="preload" href="/neuro-1afef4dfd044d1f6_bg.wasm" as="fetch" type="application/wasm" crossorigin="">
-<link rel="modulepreload" href="/neuro-1afef4dfd044d1f6.js"></head>
+<link rel="preload" href="/neuro-7492bb25a035ad84_bg.wasm" as="fetch" type="application/wasm" crossorigin="">
+<link rel="modulepreload" href="/neuro-7492bb25a035ad84.js"></head>
 
 <body>
 
 
-<script>(function () {
-    var protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    var url = protocol + '//' + window.location.host + '/_trunk/ws';
-    var poll_interval = 5000;
-    var reload_upon_connect = () => {
-        window.setTimeout(
-            () => {
-                // when we successfully reconnect, we'll force a
-                // reload (since we presumably lost connection to
-                // trunk due to it being killed, so it will have
-                // rebuilt on restart)
-                var ws = new WebSocket(url);
-                ws.onopen = () => window.location.reload();
-                ws.onclose = reload_upon_connect;
-            },
-            poll_interval);
-    };
-
-    var ws = new WebSocket(url);
-    ws.onmessage = (ev) => {
-        const msg = JSON.parse(ev.data);
-        if (msg.reload) {
-            window.location.reload();
-        }
-    };
-    ws.onclose = reload_upon_connect;
-})()
-</script></body></html>
+</body></html>
