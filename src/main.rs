@@ -61,28 +61,17 @@ enum OutputType {
 struct Output(OutputType, i16);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum NodeType {
+    InputType(InputType),
+    InnerType(InnerType),
+    OutputType(OutputType),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum Node {
     Input(Input),
     Output(Output),
     Inner(Inner),
-}
-
-impl Node {
-    fn get_value(&self) -> f32 {
-        match self {
-            Self::Input(i) => i.1 as f32 / i16::MIN as f32,
-            Self::Output(o) => o.1 as f32 / i16::MIN as f32,
-            Self::Inner(i) => i.1 as f32 / i16::MIN as f32,
-        }
-    }
-
-    fn set_value(&mut self, value: f32) {
-        match self {
-            Self::Input(i) => i.1 = ((0.0 - value) * i16::MIN as f32) as i16,
-            Self::Output(o) => o.1 = ((0.0 - value) * i16::MIN as f32) as i16,
-            Self::Inner(i) => i.1 = ((0.0 - value) * i16::MIN as f32) as i16,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -350,9 +339,11 @@ fn new_brain(
 #[derive(Debug, Clone)]
 struct Neuron {
     brain: StableUnGraph<Node, f32>,
-    inputs: HashMap<InputType, NodeIndex>,
-    internals: HashMap<InnerType, NodeIndex>,
-    outputs: HashMap<OutputType, NodeIndex>,
+    inputs: HashMap<InputType, f32>,
+    internals: HashMap<InnerType, HashMap<NodeType, f32>>,
+    inner_states: HashMap<InnerType, f32>,
+    outputs: HashMap<OutputType, HashMap<NodeType, f32>>,
+    result: HashMap<OutputType, f32>,
     facing: Direction,
     last_move: (u16, u16),
 }
@@ -360,25 +351,73 @@ struct Neuron {
 impl Neuron {
     fn new(params: &Render) -> Self {
         let brain;
-        let inputs;
-        let internals;
-        let outputs;
         loop {
             let res = new_brain(params);
             if res.0.edge_count() > 0 {
-                brain = res.0;
-                inputs = res.1;
-                internals = res.2;
-                outputs = res.3;
+                brain = res;
                 break;
             }
         }
 
+        let inputs = HashMap::from_iter(brain.1.iter().map(|(input_type, _)| (*input_type, 0.0)));
+
+        let internals = HashMap::from_iter(brain.2.iter().map(|(inner_type, index)| {
+            let mut nodes = HashMap::new();
+            brain.0.neighbors(*index).for_each(|e| {
+                let neighbour = brain.0.node_weight(e).unwrap();
+                if let Node::Output(_) = neighbour {
+                    return;
+                }
+                let weight = brain
+                    .0
+                    .edge_weight(brain.0.find_edge(*index, e).unwrap())
+                    .unwrap();
+                match neighbour {
+                    Node::Input(input) => {
+                        nodes.insert(NodeType::InputType(input.0), *weight);
+                    }
+                    Node::Inner(inner) => {
+                        nodes.insert(NodeType::InnerType(inner.0), *weight);
+                    }
+                    _ => unreachable!(),
+                }
+            });
+            (*inner_type, nodes)
+        }));
+
+        let inner_states =
+            HashMap::from_iter(brain.2.iter().map(|(inner_type, _)| (*inner_type, 1.0)));
+
+        let outputs = HashMap::from_iter(brain.3.iter().map(|(output_type, index)| {
+            let mut nodes = HashMap::new();
+            brain.0.neighbors(*index).for_each(|e| {
+                let neighbour = brain.0.node_weight(e).unwrap();
+                let weight = brain
+                    .0
+                    .edge_weight(brain.0.find_edge(*index, e).unwrap())
+                    .unwrap();
+                match neighbour {
+                    Node::Input(input) => {
+                        nodes.insert(NodeType::InputType(input.0), *weight);
+                    }
+                    Node::Inner(inner) => {
+                        nodes.insert(NodeType::InnerType(inner.0), *weight);
+                    }
+                    _ => unreachable!(),
+                }
+            });
+            (*output_type, nodes)
+        }));
+
+        let result = HashMap::from_iter(brain.3.iter().map(|(output_type, _)| (*output_type, 0.0)));
+
         Self {
-            brain,
+            brain: brain.0,
             inputs,
             internals,
+            inner_states,
             outputs,
+            result,
             facing: Direction::from_repr(rand::thread_rng().gen_range(0..4)).unwrap(),
             last_move: (0, 0),
         }
@@ -407,9 +446,8 @@ impl Neuron {
     }
 
     fn update(&mut self, grid: &Vec<Vec<bool>>, time: f32, coord: Coord) {
-        self.inputs.iter().for_each(|(input, index)| {
-            let node = self.brain.node_weight_mut(*index).unwrap();
-            node.set_value(match input {
+        self.inputs.iter_mut().for_each(|(input, value)| {
+            *value = match input {
                 InputType::Random => rand::thread_rng().gen_range((0.0 - 1.0)..1.0),
                 InputType::Oscillator => ((time * 256.0) / std::f32::consts::PI).sin(),
                 InputType::Age => (time - 0.5) * 2.0,
@@ -493,48 +531,49 @@ impl Neuron {
                         }
                     }) / 8.0
                 }
-            });
+            };
         });
     }
 
     fn calc(&mut self) {
-        self.internals.iter().for_each(|(_, index)| {
+        self.inner_states = HashMap::from_iter(self.internals.iter().map(|(inner_type, nodes)| {
             let mut value = 0.0;
-            self.brain.neighbors(*index).for_each(|e| {
-                let neighbour = self.brain.node_weight(e).unwrap();
-                if let Node::Output(_) = neighbour {
-                    return;
-                }
-                let weight = self
-                    .brain
-                    .edge_weight(self.brain.find_edge(*index, e).unwrap())
-                    .unwrap();
-                value += neighbour.get_value() * weight;
-            });
-            let node = self.brain.node_weight_mut(*index).unwrap();
-            node.set_value(value.tanh());
-        });
+            nodes
+                .iter()
+                .for_each(|(input_type, weight)| match input_type {
+                    NodeType::InputType(input_type) => {
+                        value += self.inputs[input_type] * weight;
+                    }
+                    NodeType::InnerType(inner_type) => {
+                        value += self.inner_states[inner_type] * weight;
+                    }
+                    _ => unreachable!(),
+                });
+            (*inner_type, value.tanh())
+        }));
 
-        self.outputs.iter().for_each(|(_, index)| {
+        self.result = HashMap::from_iter(self.outputs.iter().map(|(output_type, nodes)| {
             let mut value = 0.0;
-            self.brain.neighbors(*index).for_each(|e| {
-                let neighbour = self.brain.node_weight(e).unwrap();
-                let weight = self
-                    .brain
-                    .edge_weight(self.brain.find_edge(*index, e).unwrap())
-                    .unwrap();
-                value += neighbour.get_value() * weight;
+            nodes.iter().for_each(|(input_type, weight)| {
+                match input_type {
+                    NodeType::InputType(input_type) => {
+                        value += self.inputs[input_type] * weight;
+                    }
+                    NodeType::InnerType(inner_type) => {
+                        value += self.inner_states[inner_type] * weight;
+                    }
+                    _ => unreachable!(),
+                };
             });
-            let node = self.brain.node_weight_mut(*index).unwrap();
-            node.set_value(value.tanh());
-        });
+            (*output_type, value.tanh())
+        }));
     }
 
     fn intention(&self) -> Intention {
-        self.outputs
+        self.result
             .iter()
-            .fold(Intention::new(self.facing), |acc, (output, index)| {
-                let value = self.brain.node_weight(*index).unwrap().get_value();
+            .fold(Intention::new(self.facing), |acc, (output, value)| {
+                let value = value.clone();
                 match output {
                     OutputType::MoveRandom => {
                         if value > 0.5 {
@@ -703,6 +742,7 @@ impl World {
 struct Render {
     world_size: u16,
     pop_percent: f32,
+    gen_count: usize,
     time_steps: usize,
     genome_size: u8,
     mutation_rate: f32,
@@ -714,6 +754,7 @@ impl Default for Render {
         Self {
             world_size: 128,
             pop_percent: 0.2,
+            gen_count: 128,
             time_steps: 192,
             genome_size: 4,
             mutation_rate: 0.01,
@@ -783,6 +824,7 @@ fn main() {
     mount_to_body(|cx| {
         const CANVAS_SIZE: usize = 720;
         let (clock, set_clock) = create_signal(cx, Clock::default());
+        let (interval, set_interval) = create_signal(cx, 500);
         let (world, set_world) = create_signal(cx, World::default());
         let (history, set_history) = create_signal(cx, Vec::<Vec<Coord>>::new());
         let (state, set_state) = create_signal(cx, Render::default());
@@ -807,7 +849,7 @@ fn main() {
                 }
                 set_clock(clock);
             },
-            500,
+            interval,
             leptos_use::UseIntervalFnOptions {
                 immediate: false,
                 ..Default::default()
@@ -886,8 +928,6 @@ fn main() {
             debug_warn!("done");
         };
 
-        let pause_2 = pause.clone();
-        let resume_2 = resume.clone();
         view! { cx,
             <div class="w-screen h-screen font-sans flex flex-col items-center justify-center md:justify-normal">
                 <p class="pt-8 text-4xl font-sans font-bold">"Welcome to Neuro!"</p>
@@ -944,6 +984,30 @@ fn main() {
                         </div>
 
                         <div class="w-full flex items-center">
+                            <label for="generation" class="text-2xl whitespace-nowrap">"Generations : "</label>
+
+                            <div class="w-full ml-2 flex flex-col justify-between">
+                                <input id="generation" type="range" min="128" max="1024" step="128" list="ticks_gen"
+                                    on:input=move |ev| {
+                                        set_state.update(|state| {
+                                            state.gen_count = event_target_value(&ev).parse().unwrap();
+                                        });
+                                    }
+                                    prop:value=move || state.with(|state| state.gen_count) />
+                                <datalist id="ticks_gen" class="ticks flex flex-col justify-between">
+                                    <option value="128" label="128"></option>
+                                    <option value="256" label="256"></option>
+                                    <option value="384" label="384"></option>
+                                    <option value="512" label="512"></option>
+                                    <option value="640" label="640"></option>
+                                    <option value="768" label="768"></option>
+                                    <option value="896" label="896"></option>
+                                    <option value="1024" label="1024"></option>
+                                </datalist>
+                            </div>
+                        </div>
+
+                        <div class="w-full flex items-center">
                             <label for="time" class="text-2xl whitespace-nowrap">"Time steps : "</label>
 
                             <div class="w-full ml-2 flex flex-col justify-between">
@@ -982,44 +1046,23 @@ fn main() {
                             <div class="h-full grid grid-cols-3 gap-0">
                                     <button on:click=move |_| set_clock(Clock::default())
                                         class="h-full p-2 border-r border-b">
-                                        <svg class="w-8 aspect-square" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                        <svg class="w-8 aspect-square mx-auto" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                                             <path d="M19 19L12.7071 12.7071C12.3166 12.3166 12.3166 11.6834 12.7071 11.2929L19 5" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
                                             <path d="M11 19L4.70711 12.7071C4.31658 12.3166 4.31658 11.6834 4.70711 11.2929L11 5" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
                                         </svg>
                                     </button>
-                                    <Show
-                                        when=move || is_active()
-                                        fallback=move |cx| {
-                                            let resume = resume_2.clone();
-                                            view! { cx,
-                                                <button on:click=move |_| resume()
-                                                    class="h-full p-2 border-b">
-                                                    <svg class="h-full" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                                        <path d="M8 17.1783V6.82167C8 6.03258 8.87115 5.55437 9.53688 5.97801L17.6742 11.1563C18.2917 11.5493 18.2917 12.4507 17.6742 12.8437L9.53688 18.022C8.87115 18.4456 8 17.9674 8 17.1783Z" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                                                    </svg>
-                                                </button>
-                                            }
-                                        } >
-                                        {
-                                            let pause = pause_2.clone();
-                                            view! {cx,
-                                                <button on:click=move |_| pause()
-                                                    class="h-full p-2 border-b">
-                                                    <svg class="h-full" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                                        <rect x="6" y="6" width="4" height="12" rx="1" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                                                        <rect x="14" y="6" width="4" height="12" rx="1" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                                                    </svg>
-                                                </button>
-                                            }
-                                        }
-                                    </Show>
+                                    <input type="number" min="5" max="1000"
+                                        on:input=move |ev| set_interval.set(event_target_value(&ev).parse().unwrap())
+                                        prop:value=move || interval.get()
+                                        placeholder="interval"
+                                    />
                                     <button on:click=move |_| {
                                             let mut clock = Clock::default();
                                             clock.set(0, state().time_steps);
                                             set_clock(clock);
                                         }
                                         class="h-full p-2 border-l border-b">
-                                        <svg class="h-full" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                        <svg class="w-8 aspect-square mx-auto" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                                             <path d="M5 19L11.2929 12.7071C11.6834 12.3166 11.6834 11.6834 11.2929 11.2929L5 5" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
                                             <path d="M13 19L19.2929 12.7071C19.6834 12.3166 19.6834 11.6834 19.2929 11.2929L13 5" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
                                         </svg>
@@ -1041,7 +1084,7 @@ fn main() {
                                                 set_clock(clock);
                                             }
                                         class="h-full p-2 border-r">
-                                            <svg class="h-full" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                        <svg class="w-8 aspect-square mx-auto" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                                                 <path d="M15.5 19L9.20711 12.7071C8.81658 12.3166 8.81658 11.6834 9.20711 11.2929L15.5 5" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
                                             </svg>
                                     </button>
@@ -1052,7 +1095,7 @@ fn main() {
                                             view! { cx,
                                                 <button on:click=move |_| resume()
                                                     class="h-full p-2 border-b">
-                                                    <svg class="h-full" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                        <svg class="w-8 aspect-square mx-auto" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                                                         <path d="M8 17.1783V6.82167C8 6.03258 8.87115 5.55437 9.53688 5.97801L17.6742 11.1563C18.2917 11.5493 18.2917 12.4507 17.6742 12.8437L9.53688 18.022C8.87115 18.4456 8 17.9674 8 17.1783Z" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
                                                     </svg>
                                                 </button>
@@ -1063,7 +1106,7 @@ fn main() {
                                             view! {cx,
                                                 <button on:click=move |_| pause()
                                                     class="h-full p-2 border-b">
-                                                    <svg class="h-full" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                        <svg class="w-8 aspect-square mx-auto" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                                                         <rect x="6" y="6" width="4" height="12" rx="1" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
                                                         <rect x="14" y="6" width="4" height="12" rx="1" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
                                                     </svg>
@@ -1084,7 +1127,7 @@ fn main() {
                                             set_clock(clock);
                                         }
                                         class="h-full p-2 border-l">
-                                        <svg class="h-full" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                        <svg class="w-8 aspect-square mx-auto" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                                             <path d="M9.5 5L15.7929 11.2929C16.1834 11.6834 16.1834 12.3166 15.7929 12.7071L9.5 19" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
                                         </svg>
                                     </button>
