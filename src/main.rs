@@ -1,4 +1,6 @@
 use leptos::*;
+use leptos_use::use_interval_fn_with_options;
+use leptos_use::utils::Pausable;
 use petgraph::algo::dijkstra;
 use petgraph::prelude::*;
 use petgraph::stable_graph::StableUnGraph;
@@ -592,7 +594,7 @@ impl Neuron {
 #[derive(Debug, Clone)]
 struct World {
     state: Render,
-    time: u32,
+    time: usize,
     population: HashMap<Coord, Neuron>,
 }
 
@@ -701,7 +703,7 @@ impl World {
 struct Render {
     world_size: u16,
     pop_percent: f32,
-    time_steps: u16,
+    time_steps: usize,
     genome_size: u8,
     mutation_rate: f32,
     weight_factor: u8,
@@ -710,10 +712,10 @@ struct Render {
 impl Default for Render {
     fn default() -> Self {
         Self {
-            world_size: 32,
+            world_size: 128,
             pop_percent: 0.2,
-            time_steps: 32,
-            genome_size: 1,
+            time_steps: 192,
+            genome_size: 4,
             mutation_rate: 0.01,
             weight_factor: 4,
         }
@@ -758,68 +760,91 @@ fn clear_canvas(canvas: NodeRef<leptos::html::Canvas>) {
     ctx.clear_rect(0.0, 0.0, canvas.width() as f64, canvas.height() as f64);
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Clock {
+    gen: usize,
+    time: usize,
+}
+
+impl Default for Clock {
+    fn default() -> Self {
+        Self { gen: 0, time: 0 }
+    }
+}
+
+impl Clock {
+    fn set(&mut self, gen: usize, time: usize) {
+        self.gen = gen;
+        self.time = time;
+    }
+}
+
 fn main() {
     mount_to_body(|cx| {
-        let (canvas_size, _set_canvas_size) = create_signal(cx, 720);
-        let (time, set_time) = create_signal(cx, 0usize);
-        let (paused, set_paused) = create_signal(cx, true);
+        const CANVAS_SIZE: usize = 720;
+        let (clock, set_clock) = create_signal(cx, Clock::default());
         let (world, set_world) = create_signal(cx, World::default());
         let (history, set_history) = create_signal(cx, Vec::<Vec<Coord>>::new());
-
         let (state, set_state) = create_signal(cx, Render::default());
-        set_state(Render {
-            world_size: 128,
-            pop_percent: 0.2,
-            time_steps: 256,
-            genome_size: 4,
-            mutation_rate: 0.01,
-            weight_factor: 4,
-        });
-
-        let (render, set_render) = create_signal(cx, Render::default());
-
-        let compute_state = create_memo(cx, move |_| {
-            return render() == state();
-        });
 
         let canvas_ref = create_node_ref::<leptos::html::Canvas>(cx);
 
-        let animation = move |reset: bool, direction: bool| {
-            debug_warn!("animation");
-            let mut i = time.get();
-            if reset {
-                set_time(0);
-            } else {
-                if direction {
-                    if i < history().len() - 1 {
-                        i += 1;
-                    } else {
-                        i = 0;
-                    }
+        let Pausable {
+            pause,
+            resume,
+            is_active,
+        } = use_interval_fn_with_options(
+            cx,
+            move || {
+                debug_warn!("interval");
+                let state = state.get();
+                let mut clock = clock.get();
+                if clock.time < state.time_steps {
+                    clock.time += 1;
                 } else {
-                    i = match i.checked_sub(1) {
-                        Some(i) => i,
-                        None => history().len() - 1,
-                    }
+                    clock.time = 0;
+                    clock.gen += 1;
                 }
-                set_time(i);
-                debug_warn!("i: {:?}", i);
-            }
+                set_clock(clock);
+            },
+            500,
+            leptos_use::UseIntervalFnOptions {
+                immediate: false,
+                ..Default::default()
+            },
+        );
 
-            display_world(
-                &render.get(),
-                history.with(|hist| hist[i].clone()),
-                canvas_ref.clone(),
-            );
-        };
+        let stop = watch(
+            cx,
+            move || clock.get(),
+            move |clock, _, _| {
+                debug_warn!("animation");
+                debug_warn!("clock: {:?}", clock.clone());
 
+                if history.get().len() <= 0 {
+                    return;
+                }
+
+                display_world(
+                    &state(),
+                    history.with(|hist| hist[clock.time].clone()),
+                    canvas_ref.clone(),
+                );
+            },
+            false,
+        );
+
+        let pause_1 = pause.clone();
+        let resume_1 = resume.clone();
         let compute = move |_| {
-            set_render(state());
             let state = state.get();
 
             debug_warn!("state: {:?}", state);
 
-            set_time(0);
+            if is_active.get() {
+                pause_1();
+            }
+            set_clock(Clock::default());
             set_history(vec![]);
             clear_canvas(canvas_ref.clone());
 
@@ -855,10 +880,14 @@ fn main() {
                 set_history.update(|hist| hist.push(world.with(|w| w.get_map())));
             }
 
-            animation(true, true);
+            if !is_active.get() {
+                resume_1();
+            }
             debug_warn!("done");
         };
 
+        let pause_2 = pause.clone();
+        let resume_2 = resume.clone();
         view! { cx,
             <div class="w-screen h-screen font-sans flex flex-col items-center justify-center md:justify-normal">
                 <p class="pt-8 text-4xl font-sans font-bold">"Welcome to Neuro!"</p>
@@ -921,7 +950,7 @@ fn main() {
                                 <input id="time" type="range" min="64" max="512" step="64" list="ticks_time"
                                     on:input=move |ev| {
                                         set_state.update(|state| {
-                                            state.time_steps = event_target_value(&ev).parse::<u16>().unwrap();
+                                            state.time_steps = event_target_value(&ev).parse().unwrap();
                                         });
                                     }
                                     prop:value=move || state.with(|state| state.time_steps) />
@@ -939,8 +968,7 @@ fn main() {
                         </div>
 
                         <div class="flex flex-row gap-2">
-                            <button prop:disabled=compute_state
-                                on:click=compute
+                            <button on:click=compute
                                 class="bg-green-400 w-fit mt-2 py-2 px-4 text-lg rounded-full disabled:bg-gray-500 disabled:text-white disabled:opacity-80 hover:bg-green-300 transition-all">
                                 "Compute"
                             </button>
@@ -948,14 +976,11 @@ fn main() {
 
                         <div class="flex flex-row gap-0 bg-neutral-50 rounded-lg border justify-center items-center">
                             <div class="flex flex-col gap-0 border-r">
-                                <span class="pt-2 px-2 text-2xl">Generation: 0</span>
-                                <span class="py-2 px-2 text-2xl">Time: {time}</span>
+                                <span class="pt-2 px-2 text-2xl">Generation: {move || clock.get().gen}</span>
+                                <span class="py-2 px-2 text-2xl">Time: {move || clock.get().time}</span>
                             </div>
                             <div class="h-full grid grid-cols-3 gap-0">
-                                    <button prop:disabled=move || !compute_state()
-                                        on:click=move |_| {
-                                                animation(true, true);
-                                            }
+                                    <button on:click=move |_| set_clock(Clock::default())
                                         class="h-full p-2 border-r border-b">
                                         <svg class="w-8 aspect-square" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                                             <path d="M19 19L12.7071 12.7071C12.3166 12.3166 12.3166 11.6834 12.7071 11.2929L19 5" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
@@ -963,38 +988,57 @@ fn main() {
                                         </svg>
                                     </button>
                                     <Show
-                                        when=move || paused()
-                                        fallback=move |cx| view! { cx,
-                                            <button prop:disabled=move || !compute_state()
-                                                on:click=move |_| set_paused(true)
-                                                class="h-full p-2 border-b">
-                                                <svg class="h-full" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                                    <rect x="6" y="6" width="4" height="12" rx="1" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                                                    <rect x="14" y="6" width="4" height="12" rx="1" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                                                </svg>
-                                            </button>
-                                        } >
-                                        <button prop:disabled=move || !compute_state()
-                                            on:click=move |_| set_paused(false)
-                                            class="h-full p-2 border-b">
-                                            <svg class="h-full" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                                <path d="M8 17.1783V6.82167C8 6.03258 8.87115 5.55437 9.53688 5.97801L17.6742 11.1563C18.2917 11.5493 18.2917 12.4507 17.6742 12.8437L9.53688 18.022C8.87115 18.4456 8 17.9674 8 17.1783Z" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                                            </svg>
-                                        </button>
-                                    </Show>
-                                    <button prop:disabled=move || !compute_state()
-                                        on:click=move |_| {
-                                                animation(true, false);
+                                        when=move || is_active()
+                                        fallback=move |cx| {
+                                            let resume = resume_2.clone();
+                                            view! { cx,
+                                                <button on:click=move |_| resume()
+                                                    class="h-full p-2 border-b">
+                                                    <svg class="h-full" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                                        <path d="M8 17.1783V6.82167C8 6.03258 8.87115 5.55437 9.53688 5.97801L17.6742 11.1563C18.2917 11.5493 18.2917 12.4507 17.6742 12.8437L9.53688 18.022C8.87115 18.4456 8 17.9674 8 17.1783Z" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                                                    </svg>
+                                                </button>
                                             }
+                                        } >
+                                        {
+                                            let pause = pause_2.clone();
+                                            view! {cx,
+                                                <button on:click=move |_| pause()
+                                                    class="h-full p-2 border-b">
+                                                    <svg class="h-full" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                                        <rect x="6" y="6" width="4" height="12" rx="1" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                                                        <rect x="14" y="6" width="4" height="12" rx="1" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                                                    </svg>
+                                                </button>
+                                            }
+                                        }
+                                    </Show>
+                                    <button on:click=move |_| {
+                                            let mut clock = Clock::default();
+                                            clock.set(0, state().time_steps);
+                                            set_clock(clock);
+                                        }
                                         class="h-full p-2 border-l border-b">
                                         <svg class="h-full" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                                             <path d="M5 19L11.2929 12.7071C11.6834 12.3166 11.6834 11.6834 11.2929 11.2929L5 5" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
                                             <path d="M13 19L19.2929 12.7071C19.6834 12.3166 19.6834 11.6834 19.2929 11.2929L13 5" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
                                         </svg>
                                     </button>
-                                    <button prop:disabled=move || !compute_state()
-                                        on:click=move |_| {
-                                                animation(false, false);
+                                    <button on:click=move |_| {
+                                                let state = state();
+                                                let mut clock = clock.get();
+
+                                                if clock.time > 0 {
+                                                    clock.time -= 1;
+                                                } else {
+                                                    if clock.gen > 0 {
+                                                        clock.gen -= 1;
+                                                        clock.time = state.time_steps;
+                                                    } else {
+                                                        return;
+                                                    }
+                                                }
+                                                set_clock(clock);
                                             }
                                         class="h-full p-2 border-r">
                                             <svg class="h-full" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -1002,29 +1046,43 @@ fn main() {
                                             </svg>
                                     </button>
                                     <Show
-                                        when=move || paused()
-                                        fallback=move |cx| view! { cx,
-                                            <button prop:disabled=move || !compute_state()
-                                                on:click=move |_| set_paused(true)
-                                                class="h-full p-2">
-                                                <svg class="h-full" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                                    <rect x="6" y="6" width="4" height="12" rx="1" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                                                    <rect x="14" y="6" width="4" height="12" rx="1" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                                                </svg>
-                                            </button>
-                                        } >
-                                        <button prop:disabled=move || !compute_state()
-                                            on:click=move |_| set_paused(false)
-                                            class="h-full p-2">
-                                            <svg class="h-full" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                                <path d="M8 17.1783V6.82167C8 6.03258 8.87115 5.55437 9.53688 5.97801L17.6742 11.1563C18.2917 11.5493 18.2917 12.4507 17.6742 12.8437L9.53688 18.022C8.87115 18.4456 8 17.9674 8 17.1783Z" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                                            </svg>
-                                        </button>
-                                    </Show>
-                                    <button prop:disabled=move || !compute_state()
-                                        on:click=move |_| {
-                                                animation(false, true);
+                                        when=move || is_active()
+                                        fallback=move |cx| {
+                                            let resume = resume.clone();
+                                            view! { cx,
+                                                <button on:click=move |_| resume()
+                                                    class="h-full p-2 border-b">
+                                                    <svg class="h-full" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                                        <path d="M8 17.1783V6.82167C8 6.03258 8.87115 5.55437 9.53688 5.97801L17.6742 11.1563C18.2917 11.5493 18.2917 12.4507 17.6742 12.8437L9.53688 18.022C8.87115 18.4456 8 17.9674 8 17.1783Z" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                                                    </svg>
+                                                </button>
                                             }
+                                        } >
+                                        {
+                                            let pause = pause.clone();
+                                            view! {cx,
+                                                <button on:click=move |_| pause()
+                                                    class="h-full p-2 border-b">
+                                                    <svg class="h-full" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                                        <rect x="6" y="6" width="4" height="12" rx="1" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                                                        <rect x="14" y="6" width="4" height="12" rx="1" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                                                    </svg>
+                                                </button>
+                                            }
+                                        }
+                                    </Show>
+                                    <button on:click=move |_| {
+                                            let state = state();
+                                            let mut clock = clock.get();
+
+                                            if clock.time < state.time_steps {
+                                                clock.time += 1;
+                                            } else {
+                                                clock.time = 0;
+                                                clock.gen += 1;
+                                            }
+                                            set_clock(clock);
+                                        }
                                         class="h-full p-2 border-l">
                                         <svg class="h-full" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                                             <path d="M9.5 5L15.7929 11.2929C16.1834 11.6834 16.1834 12.3166 15.7929 12.7071L9.5 19" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
@@ -1039,7 +1097,7 @@ fn main() {
                         <div id="console" class="absolute top-0 left-0 z-10 w-full h-full bg-neutral-900 text-neutral-100 text-md hidden">
                             <div id="log" class="m-16"></div>
                         </div>
-                        <canvas ref=canvas_ref width=canvas_size height=canvas_size class="bg-white w-full h-full"/>
+                        <canvas ref=canvas_ref width=CANVAS_SIZE height=CANVAS_SIZE class="bg-white w-full h-full"/>
                     </div>
                 </div>
             </div>
