@@ -5,11 +5,12 @@ use petgraph::algo::dijkstra;
 use petgraph::prelude::*;
 use petgraph::stable_graph::StableUnGraph;
 use rand::distributions::{Distribution, Uniform};
+use rand::seq::SliceRandom;
 use rand::Rng;
 use std::collections::{HashMap, HashSet};
 use strum::{EnumCount, FromRepr};
 use wasm_bindgen::JsCast;
-use web_sys::CanvasRenderingContext2d;
+use web_sys::{CanvasRenderingContext2d, HtmlDivElement};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EnumCount, FromRepr)]
 enum InputType {
@@ -76,8 +77,8 @@ enum Node {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Connection {
-    from: Node,
-    to: Node,
+    from: NodeType,
+    to: NodeType,
     weight: f32,
 }
 
@@ -85,21 +86,15 @@ fn valid_connection(state: &Render) -> Connection {
     let mut rng = rand::thread_rng();
     let in_type: bool = rng.gen();
     let from = if in_type {
-        Node::Input(Input(
-            InputType::from_repr(rng.gen_range(0..InputType::COUNT)).unwrap(),
-            0,
-        ))
+        NodeType::InputType(InputType::from_repr(rng.gen_range(0..InputType::COUNT)).unwrap())
     } else {
-        Node::Inner(Inner(rng.gen_range(0..INNER_STATES), 0))
+        NodeType::InnerType(rng.gen_range(0..INNER_STATES))
     };
     let out_type: bool = rng.gen();
     let to = if out_type {
-        Node::Output(Output(
-            OutputType::from_repr(rng.gen_range(0..OutputType::COUNT)).unwrap(),
-            0,
-        ))
+        NodeType::OutputType(OutputType::from_repr(rng.gen_range(0..OutputType::COUNT)).unwrap())
     } else {
-        Node::Inner(Inner(rng.gen_range(0..INNER_STATES), 0))
+        NodeType::InnerType(rng.gen_range(0..INNER_STATES))
     };
     let weight: f32 = rng.gen_range((0.0 - 1.0)..1.0) * (state.weight_factor as f32);
 
@@ -248,45 +243,45 @@ fn new_brain(
 
     for gene in genome.iter() {
         match gene.from {
-            Node::Input(input) => {
-                if inputs.get(&input.0).is_none() {
-                    let node = graph.add_node(Node::Input(input));
-                    inputs.insert(input.0, node);
+            NodeType::InputType(input) => {
+                if inputs.get(&input).is_none() {
+                    let node = graph.add_node(Node::Input(Input(input, 0)));
+                    inputs.insert(input, node);
                 }
             }
-            Node::Inner(inner) => {
-                if internals.get(&inner.0).is_none() {
-                    let node = graph.add_node(Node::Inner(inner));
-                    internals.insert(inner.0, node);
+            NodeType::InnerType(inner) => {
+                if internals.get(&inner).is_none() {
+                    let node = graph.add_node(Node::Inner(Inner(inner, 0)));
+                    internals.insert(inner, node);
                 }
             }
             _ => unreachable!(),
         }
 
         match gene.to {
-            Node::Inner(inner) => {
-                if internals.get(&inner.0).is_none() {
-                    let node = graph.add_node(Node::Inner(inner));
-                    internals.insert(inner.0, node);
+            NodeType::InnerType(inner) => {
+                if internals.get(&inner).is_none() {
+                    let node = graph.add_node(Node::Inner(Inner(inner, 0)));
+                    internals.insert(inner, node);
                 }
             }
-            Node::Output(output) => {
-                if outputs.get(&output.0).is_none() {
-                    let node = graph.add_node(Node::Output(output));
-                    outputs.insert(output.0, node);
+            NodeType::OutputType(output) => {
+                if outputs.get(&output).is_none() {
+                    let node = graph.add_node(Node::Output(Output(output, 0)));
+                    outputs.insert(output, node);
                 }
             }
             _ => unreachable!(),
         }
 
         let from = match gene.from {
-            Node::Input(input) => inputs.get(&input.0).copied().unwrap(),
-            Node::Inner(inner) => internals.get(&inner.0).copied().unwrap(),
+            NodeType::InputType(input) => inputs.get(&input).copied().unwrap(),
+            NodeType::InnerType(inner) => internals.get(&inner).copied().unwrap(),
             _ => unreachable!(),
         };
         let to = match gene.to {
-            Node::Inner(inner) => internals.get(&inner.0).copied().unwrap(),
-            Node::Output(output) => outputs.get(&output.0).copied().unwrap(),
+            NodeType::InnerType(inner) => internals.get(&inner).copied().unwrap(),
+            NodeType::OutputType(output) => outputs.get(&output).copied().unwrap(),
             _ => unreachable!(),
         };
         graph.add_edge(from, to, gene.weight);
@@ -336,6 +331,146 @@ fn new_brain(
     (graph, inputs, internals, outputs)
 }
 
+#[derive(Debug, Clone, PartialEq)]
+struct Genome {
+    connections: Vec<Connection>,
+}
+
+impl Genome {
+    fn from_graph(brain: &StableUnGraph<Node, f32>) -> Self {
+        let mut connections = Vec::new();
+        for edge in brain.edge_indices() {
+            let (from, to) = brain.edge_endpoints(edge).unwrap();
+            let from = match brain[from] {
+                Node::Input(Input(input, _)) => NodeType::InputType(input),
+                Node::Inner(Inner(inner, _)) => NodeType::InnerType(inner),
+                _ => unreachable!(),
+            };
+            let to = match brain[to] {
+                Node::Inner(Inner(inner, _)) => NodeType::InnerType(inner),
+                Node::Output(Output(output, _)) => NodeType::OutputType(output),
+                _ => unreachable!(),
+            };
+            connections.push(Connection {
+                from,
+                to,
+                weight: *brain.edge_weight(edge).unwrap(),
+            });
+        }
+        Self { connections }
+    }
+
+    fn to_graph(
+        &self,
+    ) -> (
+        StableUnGraph<Node, f32>,
+        HashMap<InputType, NodeIndex>,
+        HashMap<InnerType, NodeIndex>,
+        HashMap<OutputType, NodeIndex>,
+    ) {
+        let mut graph = StableUnGraph::<Node, f32>::default();
+        let mut inputs = HashMap::new();
+        let mut internals = HashMap::new();
+        let mut outputs = HashMap::new();
+
+        for conn in self.connections.iter() {
+            match conn.from {
+                NodeType::InputType(input) => {
+                    if inputs.get(&input).is_none() {
+                        let node = graph.add_node(Node::Input(Input(input, 0)));
+                        inputs.insert(input, node);
+                    }
+                }
+                NodeType::InnerType(inner) => {
+                    if internals.get(&inner).is_none() {
+                        let node = graph.add_node(Node::Inner(Inner(inner, 0)));
+                        internals.insert(inner, node);
+                    }
+                }
+                _ => unreachable!(),
+            }
+
+            match conn.to {
+                NodeType::InnerType(inner) => {
+                    if internals.get(&inner).is_none() {
+                        let node = graph.add_node(Node::Inner(Inner(inner, 0)));
+                        internals.insert(inner, node);
+                    }
+                }
+                NodeType::OutputType(output) => {
+                    if outputs.get(&output).is_none() {
+                        let node = graph.add_node(Node::Output(Output(output, 0)));
+                        outputs.insert(output, node);
+                    }
+                }
+                _ => unreachable!(),
+            }
+
+            let from = match conn.from {
+                NodeType::InputType(input) => inputs.get(&input).copied().unwrap(),
+                NodeType::InnerType(inner) => internals.get(&inner).copied().unwrap(),
+                _ => unreachable!(),
+            };
+            let to = match conn.to {
+                NodeType::InnerType(inner) => internals.get(&inner).copied().unwrap(),
+                NodeType::OutputType(output) => outputs.get(&output).copied().unwrap(),
+                _ => unreachable!(),
+            };
+            graph.add_edge(from, to, conn.weight);
+        }
+
+        (graph, inputs, internals, outputs)
+    }
+
+    fn mutate(&mut self) {
+        let mut rng = rand::thread_rng();
+        let conn = self.connections.choose_mut(&mut rng).unwrap();
+        let random = rng.gen_range(0..3);
+        match random {
+            0 => match conn.from {
+                NodeType::InputType(_) => {
+                    let range = InputType::COUNT;
+                    conn.from =
+                        NodeType::InputType(InputType::from_repr(rng.gen_range(0..range)).unwrap());
+                }
+                NodeType::InnerType(inner) => {
+                    let from = NodeType::InnerType(inner);
+                    let to = NodeType::InnerType(inner);
+                    self.connections.push(Connection {
+                        from,
+                        to,
+                        weight: rng.gen_range(-1.0..1.0),
+                    });
+                }
+                _ => unreachable!(),
+            },
+            1 => match conn.to {
+                NodeType::InnerType(inner) => {
+                    let from = NodeType::InnerType(inner);
+                    let to = NodeType::InnerType(inner);
+                    self.connections.push(Connection {
+                        from,
+                        to,
+                        weight: rng.gen_range(-1.0..1.0),
+                    });
+                }
+                NodeType::OutputType(_) => {
+                    let range = OutputType::COUNT;
+                    conn.to = NodeType::OutputType(
+                        OutputType::from_repr(rng.gen_range(0..range)).unwrap(),
+                    );
+                }
+                _ => unreachable!(),
+            },
+            2 => {
+                let range = conn.weight.abs().ceil();
+                conn.weight = rng.gen_range(-range..range);
+            }
+            _ => unreachable!(),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct Neuron {
     brain: StableUnGraph<Node, f32>,
@@ -349,13 +484,17 @@ struct Neuron {
 }
 
 impl Neuron {
-    fn new(params: &Render) -> Self {
+    fn new(params: &Render, gene: Option<Genome>) -> Self {
         let brain;
-        loop {
-            let res = new_brain(params);
-            if res.0.edge_count() > 0 {
-                brain = res;
-                break;
+        if let Some(gene) = gene {
+            brain = gene.to_graph();
+        } else {
+            loop {
+                let res = new_brain(params);
+                if res.0.edge_count() > 0 {
+                    brain = res;
+                    break;
+                }
             }
         }
 
@@ -421,6 +560,10 @@ impl Neuron {
             facing: Direction::from_repr(rand::thread_rng().gen_range(0..4)).unwrap(),
             last_move: (0, 0),
         }
+    }
+
+    fn get_genome(&self) -> Genome {
+        Genome::from_graph(&self.brain)
     }
 
     fn try_move(&mut self, direction: Option<Direction>) {
@@ -648,7 +791,7 @@ impl Default for Generation {
 }
 
 impl Generation {
-    fn new(state: &Render) -> Self {
+    fn new(state: &Render, genes: Option<Vec<Genome>>) -> Self {
         let mut rng = rand::thread_rng();
         let size_dist = Uniform::from(0..state.world_size);
         let pop_size = ((state.world_size as u32).pow(2) as f32 * state.pop_percent) as usize;
@@ -661,8 +804,38 @@ impl Generation {
         }
 
         let mut population = HashMap::with_capacity(pop_size);
-        for (x, y) in coords {
-            population.insert(Coord::new(x, y), Neuron::new(state));
+        if let Some(genes) = genes {
+            if genes.len() < 1 {
+                panic!("Not enough genes to fill population");
+            }
+            let mutation_dist = Uniform::from(0..(1.0f32 / state.mutation_rate) as usize);
+            let ratio = (pop_size as f32 / genes.len() as f32).ceil() as usize;
+            let mut gene_pool = genes
+                .clone()
+                .iter()
+                .flat_map(|gene| {
+                    let mut genes = Vec::with_capacity(ratio);
+                    for _ in 0..ratio {
+                        genes.push(gene.clone());
+                    }
+                    genes
+                })
+                .take(pop_size)
+                .collect::<Vec<_>>();
+            gene_pool.shuffle(&mut rng);
+
+            for (x, y) in coords {
+                let mutate = mutation_dist.sample(&mut rng) == 0;
+                let mut gene = gene_pool.pop().unwrap();
+                if mutate {
+                    gene.mutate();
+                }
+                population.insert(Coord::new(x, y), Neuron::new(state, Some(gene)));
+            }
+        } else {
+            for (x, y) in coords {
+                population.insert(Coord::new(x, y), Neuron::new(state, None));
+            }
         }
 
         Self {
@@ -676,6 +849,22 @@ impl Generation {
         self.population.keys().copied().collect()
     }
 
+    fn get_genomes(&self, target: (u16, u16, u16, u16)) -> Vec<Genome> {
+        let (x_min, y_min, w, h) = target;
+        let x_max = x_min + w;
+        let y_max = y_min + h;
+        self.population
+            .iter()
+            .filter_map(|(coord, neuron)| {
+                if coord.x >= x_min && coord.x < x_max && coord.y >= y_min && coord.y < y_max {
+                    None
+                } else {
+                    Some(neuron.get_genome())
+                }
+            })
+            .collect()
+    }
+
     fn step(&mut self) {
         let mut grid = Vec::with_capacity(self.state.world_size as usize);
         for _ in 0..self.state.world_size {
@@ -685,17 +874,6 @@ impl Generation {
         for (coord, _) in &self.population {
             grid[coord.x as usize][coord.y as usize] = true;
         }
-        /* debug_warn!(
-            "grid: {:?}",
-            grid.clone()
-                .iter()
-                .map(|x| x
-                    .clone()
-                    .iter()
-                    .map(|y| if *y { 1 } else { 0 })
-                    .collect::<Vec<_>>())
-                .collect::<Vec<_>>()
-        ); */
 
         let slice = self.population.keys().cloned().collect::<Vec<_>>();
 
@@ -742,15 +920,17 @@ impl Generation {
 struct World {
     state: Render,
     size: usize,
+    target: (u16, u16, u16, u16),
     generations: Vec<Generation>,
     history: Vec<Vec<Vec<Coord>>>,
 }
 
 impl World {
-    fn new(state: &Render) -> Self {
+    fn new(state: &Render, target: (u16, u16, u16, u16)) -> Self {
         Self {
             state: state.clone(),
             size: 0,
+            target,
             generations: vec![],
             history: vec![],
         }
@@ -761,16 +941,15 @@ impl World {
             let mut generation;
             let mut history = vec![];
             if self.size == 0 {
-                generation = Generation::new(&self.state);
+                generation = Generation::new(&self.state, None);
                 history.push(generation.get_map());
                 for _ in 0..self.state.time_steps {
                     generation.step();
                     history.push(generation.get_map());
                 }
             } else {
-                /* let genes = self.generations.last().unwrap().get_genomes();
-                generation = Generation::from_genes(&self.state, genes); */
-                generation = Generation::new(&self.state);
+                let genes = self.generations.last().unwrap().get_genomes(self.target);
+                generation = Generation::new(&self.state, Some(genes));
                 history.push(generation.get_map());
                 for _ in 0..self.state.time_steps {
                     generation.step();
@@ -817,6 +996,41 @@ impl Default for Render {
             weight_factor: 4,
         }
     }
+}
+
+fn display_target(target: (u16, u16, u16, u16), size: u16) {
+    let (x, y, w, h) = target;
+    let x = x as f32;
+    let y = (size - h - y) as f32;
+    let w = w as f32;
+    let h = h as f32;
+    let target = document()
+        .get_element_by_id("target")
+        .unwrap()
+        .dyn_into::<HtmlDivElement>()
+        .unwrap();
+
+    target.style().remove_property("top").unwrap();
+    target.style().remove_property("left").unwrap();
+    target.style().remove_property("width").unwrap();
+    target.style().remove_property("height").unwrap();
+
+    target
+        .style()
+        .set_property("top", &format!("{}%", (y / size as f32) * 100.0))
+        .unwrap();
+    target
+        .style()
+        .set_property("left", &format!("{}%", (x / size as f32) * 100.0))
+        .unwrap();
+    target
+        .style()
+        .set_property("width", &format!("{}%", (w / size as f32) * 100.0))
+        .unwrap();
+    target
+        .style()
+        .set_property("height", &format!("{}%", (h / size as f32) * 100.0))
+        .unwrap();
 }
 
 fn display_world(world_size: u16, map: Vec<Coord>, canvas: NodeRef<leptos::html::Canvas>) {
@@ -903,8 +1117,9 @@ fn main() {
         const CANVAS_SIZE: usize = 720;
         let (clock, set_clock) = create_signal(cx, Clock::default());
         let (interval, set_interval) = create_signal(cx, 500);
-        let (world, set_world) = create_signal(cx, World::new(&Render::default()));
+        let (world, set_world) = create_signal(cx, World::new(&Render::default(), (0, 0, 0, 0)));
         let (state, set_state) = create_signal(cx, Render::default());
+        let (target, set_target) = create_signal(cx, (0, 0, 0, 0));
 
         let canvas_ref = create_node_ref::<leptos::html::Canvas>(cx);
 
@@ -937,7 +1152,7 @@ fn main() {
             },
         );
 
-        let stop = watch(
+        let stop_clock_listener = watch(
             cx,
             move || clock.get(),
             move |clock, _, _| {
@@ -968,6 +1183,18 @@ fn main() {
             false,
         );
 
+        let stop_target_listener = watch(
+            cx,
+            move || target.get(),
+            move |target, _, _| {
+                debug_warn!("target");
+                debug_warn!("target: {:?}", target.clone());
+
+                display_target(target.clone(), state().world_size);
+            },
+            false,
+        );
+
         let pause_1 = pause.clone();
         let resume_1 = resume.clone();
         let compute = |state: Render,
@@ -975,6 +1202,7 @@ fn main() {
                        set_clock: WriteSignal<Clock>,
                        world: ReadSignal<World>,
                        set_world: WriteSignal<World>,
+                       target: ReadSignal<(u16, u16, u16, u16)>,
                        canvas_ref: NodeRef<leptos::html::Canvas>| {
             debug_warn!("state: {:?}", state);
 
@@ -982,7 +1210,7 @@ fn main() {
                 (animation.pause)();
             }
 
-            set_world.set(World::new(&state));
+            set_world.set(World::new(&state, target.get()));
             set_clock(Clock::default());
             clear_canvas(canvas_ref);
 
@@ -1091,66 +1319,14 @@ fn main() {
                         </div>
 
                         <div class="flex flex-row gap-2">
-                            <button on:click= move |_| {
-                                    let compute = compute.clone();
-                                    let animation = Animation::new(pause_1.clone(), resume_1.clone(), is_active.clone());
-                                    compute(state.get(), animation, set_clock, world, set_world, canvas_ref.clone());
-
-                                    resume_1();
-                                }
-                                class="bg-green-400 w-fit mt-2 py-2 px-4 text-lg rounded-full disabled:bg-gray-500 disabled:text-white disabled:opacity-80 hover:bg-green-300 transition-all">
-                                "Compute"
-                            </button>
-                            <button on:click= move |_| {
-                                    let compute = compute.clone();
-                                    let animation = Animation::new(pause_2.clone(), resume_2.clone(), is_active.clone());
-                                    compute(state.get(), animation, set_clock, world, set_world, canvas_ref.clone());
-
-                                    let mut count = world.with(|world| world.size);
-                                    while count < state.with(|state| state.gen_count) {
-                                        set_world.update(|world| world.step());
-                                        count = world.with(|world| world.size);
-                                    }
-
-                                    resume_2();
-                                }
-                                class="bg-green-400 w-fit mt-2 py-2 px-4 text-lg rounded-full disabled:bg-gray-500 disabled:text-white disabled:opacity-80 hover:bg-green-300 transition-all">
-                                "Generate All"
-                            </button>
-                        </div>
-
                         <div class="flex flex-col gap-0 bg-white rounded-lg border justify-center items-center">
                             <div class="grid grid-cols-2 gap-0 border-b">
-                                <span class="pt-2 px-2 text-2xl">Generation: </span>
-                                <input type="number" min="0" prop:max=move || state.with(|state| state.gen_count - 1) class="text-lg text-center"
-                                    on:input=move |ev| {
-                                        let value = event_target_value(&ev).parse();
-                                        if let Ok(value) = value {
-                                            set_clock.update(|clock| clock.gen = value);
-                                        }
-                                    }
-                                    prop:value=move || clock.with(|clock| clock.gen)
-                                    placeholder="generation"
-                                />
-                                <span class="py-2 px-2 text-2xl">Time: </span>
-                                <input type="number" min="0" prop:max=move || state.with(|state| state.time_steps) class="text-lg text-center"
-                                    on:input=move |ev| {
-                                        let value = event_target_value(&ev).parse();
-                                        if let Ok(value) = value {
-                                            set_clock.update(|clock| clock.time = value);
-                                        }
-                                    }
-                                    prop:value=move || clock.with(|clock| clock.time)
-                                    placeholder="time"
-                                />
-                            </div>
-                            <div class="grid grid-cols-2 gap-0">
                                 <input type="number" min="5" max="1000" class="text-lg text-center"
                                     on:input=move |ev| set_interval.set(event_target_value(&ev).parse().unwrap())
                                     prop:value=move || interval.get()
                                     placeholder="interval"
                                 />
-                                <div>
+                                <div class="grid grid-cols-3 gap-0">
                                 <button on:click=move |_| {
                                         let state = state();
                                         let mut clock = clock.get();
@@ -1217,12 +1393,119 @@ fn main() {
                                 </button>
                                 </div>
                             </div>
+                            <div class="grid grid-cols-2 gap-0">
+                                <span class="pt-2 px-2 text-2xl">"Generation: "</span>
+                                <input type="number" min="0" prop:max=move || state.with(|state| state.gen_count - 1) class="text-lg text-center"
+                                    on:input=move |ev| {
+                                        let value = event_target_value(&ev).parse();
+                                        if let Ok(value) = value {
+                                            set_clock.update(|clock| clock.gen = value);
+                                        }
+                                    }
+                                    prop:value=move || clock.with(|clock| clock.gen)
+                                    placeholder="generation"
+                                />
+                                <span class="py-2 px-2 text-2xl">"Time: "</span>
+                                <input type="number" min="0" prop:max=move || state.with(|state| state.time_steps) class="text-lg text-center"
+                                    on:input=move |ev| {
+                                        let value = event_target_value(&ev).parse();
+                                        if let Ok(value) = value {
+                                            set_clock.update(|clock| clock.time = value);
+                                        }
+                                    }
+                                    prop:value=move || clock.with(|clock| clock.time)
+                                    placeholder="time"
+                                />
+                            </div>
+                        </div>
+
+                        <div class="flex flex-col gap-0 bg-white rounded-lg border justify-center items-center">
+                            <div class="w-full h-full flex justify-center items-center border-b">
+                                <p class="text-2xl">"Target Box"</p>
+                            </div>
+                            <div class="grid grid-cols-4 gap-0">
+                                <span class="pt-2 px-2 text-xl">"X: "</span>
+                                <input type="number" min="0" prop:max=move || state.with(|state| state.world_size - 2) class="text-lg text-center"
+                                    on:input=move |ev| {
+                                        let value = event_target_value(&ev).parse();
+                                        if let Ok(value) = value {
+                                            set_target.update(|target| target.0 = value);
+                                        }
+                                    }
+                                    prop:value=move || target.with(|target| target.0)
+                                    placeholder="x coordinate"
+                                />
+                                <span class="py-2 px-2 text-xl">"Y: "</span>
+                                <input type="number" min="0" prop:max=move || state.with(|state| state.world_size - 2) class="text-lg text-center"
+                                    on:input=move |ev| {
+                                        let value = event_target_value(&ev).parse();
+                                        if let Ok(value) = value {
+                                            set_target.update(|target| target.1 = value);
+                                        }
+                                    }
+                                    prop:value=move || target.with(|target| target.1)
+                                    placeholder="y coordinate"
+                                />
+                                <span class="pt-2 px-2 text-xl">"Width: "</span>
+                                <input type="number" min="2" prop:max=move || state.with(|state| state.world_size) - target.with(|target| target.0) class="text-lg text-center"
+                                    on:input=move |ev| {
+                                        let value = event_target_value(&ev).parse();
+                                        if let Ok(value) = value {
+                                            set_target.update(|target| target.2 = value);
+                                        }
+                                    }
+                                    prop:value=move || target.with(|target| target.2)
+                                    placeholder="width"
+                                />
+                                <span class="py-2 px-2 text-xl">"Height: "</span>
+                                <input type="number" min="2" prop:max=move || state.with(|state| state.world_size) - target.with(|target| target.1) class="text-lg text-center"
+                                    on:input=move |ev| {
+                                        let value = event_target_value(&ev).parse();
+                                        if let Ok(value) = value {
+                                            set_target.update(|target| target.3 = value);
+                                        }
+                                    }
+                                    prop:value=move || target.with(|target| target.3)
+                                    placeholder="height"
+                                />
+                            </div>
+                        </div>
+                        </div>
+
+                        <div class="flex flex-row gap-2">
+                            <button on:click= move |_| {
+                                    let compute = compute.clone();
+                                    let animation = Animation::new(pause_1.clone(), resume_1.clone(), is_active.clone());
+                                    compute(state.get(), animation, set_clock, world, set_world, target, canvas_ref.clone());
+
+                                    resume_1();
+                                }
+                                prop:disabled=move || target.with(|target| target.2) < 2 || target.with(|target| target.3) < 2
+                                class="bg-green-400 w-fit mt-2 py-2 px-4 text-lg rounded-full disabled:bg-gray-500 disabled:text-white disabled:opacity-80 hover:bg-green-300 transition-all">
+                                "Compute"
+                            </button>
+                            <button on:click= move |_| {
+                                    let compute = compute.clone();
+                                    let animation = Animation::new(pause_2.clone(), resume_2.clone(), is_active.clone());
+                                    compute(state.get(), animation, set_clock, world, set_world, target, canvas_ref.clone());
+
+                                    let mut count = world.with(|world| world.size);
+                                    while count < state.with(|state| state.gen_count) {
+                                        set_world.update(|world| world.step());
+                                        count = world.with(|world| world.size);
+                                    }
+
+                                    resume_2();
+                                }
+                                prop:disabled=move || target.with(|target| target.2) < 2 || target.with(|target| target.3) < 2
+                                class="bg-green-400 w-fit mt-2 py-2 px-4 text-lg rounded-full disabled:bg-gray-500 disabled:text-white disabled:opacity-80 hover:bg-green-300 transition-all">
+                                "Generate All"
+                            </button>
                         </div>
                     </div>
 
                     <div class="relative mb-8 lg:m-0 aspect-square border shadow-2xl rounded-lg overflow-hidden">
-                        <div id="console" class="absolute top-0 left-0 z-10 w-full h-full bg-neutral-900 text-neutral-100 text-md hidden">
-                            <div id="log" class="m-16"></div>
+                        <div id="target" class="absolute z-10 border-2 border-red-400">
                         </div>
                         <canvas ref=canvas_ref width=CANVAS_SIZE height=CANVAS_SIZE class="bg-white w-full h-full"/>
                     </div>
