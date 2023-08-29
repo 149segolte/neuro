@@ -765,7 +765,6 @@ impl Default for Render {
 
 fn display_world(state: &Render, map: Vec<Coord>, canvas: NodeRef<leptos::html::Canvas>) {
     debug_warn!("display_world");
-    debug_warn!("map: {:?}", map.clone());
     let canvas = canvas.get().unwrap();
     let ctx = canvas
         .get_context("2d")
@@ -791,7 +790,7 @@ fn display_world(state: &Render, map: Vec<Coord>, canvas: NodeRef<leptos::html::
 }
 
 fn clear_canvas(canvas: NodeRef<leptos::html::Canvas>) {
-    let canvas = canvas.get().unwrap();
+    let canvas = canvas.get_untracked().unwrap();
     let ctx = canvas
         .get_context("2d")
         .unwrap()
@@ -817,6 +816,29 @@ impl Clock {
     fn set(&mut self, gen: usize, time: usize) {
         self.gen = gen;
         self.time = time;
+    }
+}
+
+struct Animation {
+    is_active: Signal<bool>,
+    pause: Box<dyn Fn()>,
+    resume: Box<dyn Fn()>,
+}
+
+impl Animation {
+    fn new(
+        pause: impl (Fn()) + Clone + 'static,
+        resume: impl (Fn()) + Clone + 'static,
+        is_active: Signal<bool>,
+    ) -> Self {
+        let pause = Box::new(pause);
+        let resume = Box::new(resume);
+
+        Self {
+            is_active,
+            pause,
+            resume,
+        }
     }
 }
 
@@ -863,7 +885,7 @@ fn main() {
                 debug_warn!("animation");
                 debug_warn!("clock: {:?}", clock.clone());
 
-                if history.get().len() <= 0 {
+                if clock.time >= history.with(|hist| hist.len()) {
                     return;
                 }
 
@@ -878,56 +900,33 @@ fn main() {
 
         let pause_1 = pause.clone();
         let resume_1 = resume.clone();
-        let compute = move |_| {
-            let state = state.get();
-
+        let compute = |state: Render,
+                       animation: Animation,
+                       set_clock: WriteSignal<Clock>,
+                       set_history: WriteSignal<Vec<Vec<Coord>>>,
+                       world: ReadSignal<World>,
+                       set_world: WriteSignal<World>,
+                       canvas_ref: NodeRef<leptos::html::Canvas>| {
             debug_warn!("state: {:?}", state);
 
-            if is_active.get() {
-                pause_1();
+            if animation.is_active.get() {
+                (animation.pause)();
             }
+
             set_clock(Clock::default());
             set_history(vec![]);
-            clear_canvas(canvas_ref.clone());
-
-            let console = document().get_element_by_id("console").unwrap();
-            console.class_list().remove_1("hidden").unwrap();
-            let logger = document().get_element_by_id("log").unwrap();
-            let log = |msg: &str| {
-                logger
-                    .append_child(&document().create_text_node(msg))
-                    .unwrap();
-                logger
-                    .append_child(&document().create_element("br").unwrap())
-                    .unwrap();
-            };
-
-            log(format!(
-                "Loading a world of size {size}x{size}...",
-                size = state.world_size
-            )
-            .as_str());
+            clear_canvas(canvas_ref);
 
             set_world.set(World::new(&state));
+            set_history.update(|hist| hist.push(world.with_untracked(|w| w.get_map())));
 
-            log("World loaded!");
-
-            set_history.update(|hist| hist.push(world.with(|w| w.get_map())));
-
-            console.class_list().add_1("hidden").unwrap();
-
-            for i in 0..state.time_steps {
-                debug_warn!("step {}", i);
-                set_world.update(|w| w.step());
-                set_history.update(|hist| hist.push(world.with(|w| w.get_map())));
-            }
-
-            if !is_active.get() {
-                resume_1();
-            }
             debug_warn!("done");
         };
 
+        let pause_1 = pause.clone();
+        let pause_2 = pause.clone();
+        let resume_1 = resume.clone();
+        let resume_2 = resume.clone();
         view! { cx,
             <div class="w-screen h-screen font-sans flex flex-col items-center justify-center md:justify-normal">
                 <p class="pt-8 text-4xl font-sans font-bold">"Welcome to Neuro!"</p>
@@ -1032,107 +1031,128 @@ fn main() {
                         </div>
 
                         <div class="flex flex-row gap-2">
-                            <button on:click=compute
+                            <button on:click= move |_| {
+                                    let compute = compute.clone();
+                                    let animation = Animation::new(pause_1.clone(), resume_1.clone(), is_active.clone());
+                                    compute(state.get(), animation, set_clock, set_history, world, set_world, canvas_ref.clone());
+
+                                    for i in 0..state().time_steps {
+                                        debug_warn!("step {}", i);
+                                        set_world.update(|w| w.step());
+                                        set_history.update(|h| h.push(world.with(|w| w.get_map())));
+                                    }
+                                }
                                 class="bg-green-400 w-fit mt-2 py-2 px-4 text-lg rounded-full disabled:bg-gray-500 disabled:text-white disabled:opacity-80 hover:bg-green-300 transition-all">
                                 "Compute"
                             </button>
+                            <button on:click= move |_| {
+                                    let compute = compute.clone();
+                                    let animation = Animation::new(pause_2.clone(), resume_2.clone(), is_active.clone());
+                                    compute(state.get(), animation, set_clock, set_history, world, set_world, canvas_ref.clone());
+                                }
+                                class="bg-green-400 w-fit mt-2 py-2 px-4 text-lg rounded-full disabled:bg-gray-500 disabled:text-white disabled:opacity-80 hover:bg-green-300 transition-all">
+                                "Generate All"
+                            </button>
                         </div>
 
-                        <div class="flex flex-row gap-0 bg-neutral-50 rounded-lg border justify-center items-center">
-                            <div class="flex flex-col gap-0 border-r">
-                                <span class="pt-2 px-2 text-2xl">Generation: {move || clock.get().gen}</span>
-                                <span class="py-2 px-2 text-2xl">Time: {move || clock.get().time}</span>
+                        <div class="flex flex-col gap-0 bg-white rounded-lg border justify-center items-center">
+                            <div class="grid grid-cols-2 gap-0 border-b">
+                                <span class="pt-2 px-2 text-2xl">Generation: </span>
+                                <input type="number" min="0" prop:max=move || state.with(|state| state.gen_count) class="text-lg text-center"
+                                    on:input=move |ev| {
+                                        let value = event_target_value(&ev).parse();
+                                        if let Ok(value) = value {
+                                            set_clock.update(|clock| clock.gen = value);
+                                        }
+                                    }
+                                    prop:value=move || clock.with(|clock| clock.gen)
+                                    placeholder="generation"
+                                />
+                                <span class="py-2 px-2 text-2xl">Time: </span>
+                                <input type="number" min="0" prop:max=move || state.with(|state| state.time_steps) class="text-lg text-center"
+                                    on:input=move |ev| {
+                                        let value = event_target_value(&ev).parse();
+                                        if let Ok(value) = value {
+                                            set_clock.update(|clock| clock.time = value);
+                                        }
+                                    }
+                                    prop:value=move || clock.with(|clock| clock.time)
+                                    placeholder="time"
+                                />
                             </div>
-                            <div class="h-full grid grid-cols-3 gap-0">
-                                    <button on:click=move |_| set_clock(Clock::default())
-                                        class="h-full p-2 border-r border-b">
-                                        <svg class="w-8 aspect-square mx-auto" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                            <path d="M19 19L12.7071 12.7071C12.3166 12.3166 12.3166 11.6834 12.7071 11.2929L19 5" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                                            <path d="M11 19L4.70711 12.7071C4.31658 12.3166 4.31658 11.6834 4.70711 11.2929L11 5" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                                        </svg>
-                                    </button>
-                                    <input type="number" min="5" max="1000"
-                                        on:input=move |ev| set_interval.set(event_target_value(&ev).parse().unwrap())
-                                        prop:value=move || interval.get()
-                                        placeholder="interval"
-                                    />
-                                    <button on:click=move |_| {
-                                            let mut clock = Clock::default();
-                                            clock.set(0, state().time_steps);
-                                            set_clock(clock);
-                                        }
-                                        class="h-full p-2 border-l border-b">
-                                        <svg class="w-8 aspect-square mx-auto" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                            <path d="M5 19L11.2929 12.7071C11.6834 12.3166 11.6834 11.6834 11.2929 11.2929L5 5" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                                            <path d="M13 19L19.2929 12.7071C19.6834 12.3166 19.6834 11.6834 19.2929 11.2929L13 5" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                                        </svg>
-                                    </button>
-                                    <button on:click=move |_| {
-                                                let state = state();
-                                                let mut clock = clock.get();
+                            <div class="grid grid-cols-2 gap-0">
+                                <input type="number" min="5" max="1000" class="text-lg text-center"
+                                    on:input=move |ev| set_interval.set(event_target_value(&ev).parse().unwrap())
+                                    prop:value=move || interval.get()
+                                    placeholder="interval"
+                                />
+                                <div>
+                                <button on:click=move |_| {
+                                        let state = state();
+                                        let mut clock = clock.get();
 
-                                                if clock.time > 0 {
-                                                    clock.time -= 1;
-                                                } else {
-                                                    if clock.gen > 0 {
-                                                        clock.gen -= 1;
-                                                        clock.time = state.time_steps;
-                                                    } else {
-                                                        return;
-                                                    }
-                                                }
-                                                set_clock(clock);
-                                            }
-                                        class="h-full p-2 border-r">
-                                        <svg class="w-8 aspect-square mx-auto" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                                <path d="M15.5 19L9.20711 12.7071C8.81658 12.3166 8.81658 11.6834 9.20711 11.2929L15.5 5" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                                            </svg>
-                                    </button>
-                                    <Show
-                                        when=move || is_active()
-                                        fallback=move |cx| {
-                                            let resume = resume.clone();
-                                            view! { cx,
-                                                <button on:click=move |_| resume()
-                                                    class="h-full p-2 border-b">
-                                        <svg class="w-8 aspect-square mx-auto" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                                        <path d="M8 17.1783V6.82167C8 6.03258 8.87115 5.55437 9.53688 5.97801L17.6742 11.1563C18.2917 11.5493 18.2917 12.4507 17.6742 12.8437L9.53688 18.022C8.87115 18.4456 8 17.9674 8 17.1783Z" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                                                    </svg>
-                                                </button>
-                                            }
-                                        } >
-                                        {
-                                            let pause = pause.clone();
-                                            view! {cx,
-                                                <button on:click=move |_| pause()
-                                                    class="h-full p-2 border-b">
-                                        <svg class="w-8 aspect-square mx-auto" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                                        <rect x="6" y="6" width="4" height="12" rx="1" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                                                        <rect x="14" y="6" width="4" height="12" rx="1" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                                                    </svg>
-                                                </button>
-                                            }
-                                        }
-                                    </Show>
-                                    <button on:click=move |_| {
-                                            let state = state();
-                                            let mut clock = clock.get();
-
-                                            if clock.time < state.time_steps {
-                                                clock.time += 1;
+                                        if clock.time > 0 {
+                                            clock.time -= 1;
+                                        } else {
+                                            if clock.gen > 0 {
+                                                clock.gen -= 1;
+                                                clock.time = state.time_steps;
                                             } else {
-                                                clock.time = 0;
-                                                clock.gen += 1;
+                                                return;
                                             }
-                                            set_clock(clock);
                                         }
-                                        class="h-full p-2 border-l">
-                                        <svg class="w-8 aspect-square mx-auto" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                            <path d="M9.5 5L15.7929 11.2929C16.1834 11.6834 16.1834 12.3166 15.7929 12.7071L9.5 19" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                                        </svg>
-                                    </button>
+                                        set_clock(clock);
+                                    }
+                                    class="h-full p-2">
+                                    <svg class="w-8 aspect-square mx-auto" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                        <path d="M15.5 19L9.20711 12.7071C8.81658 12.3166 8.81658 11.6834 9.20711 11.2929L15.5 5" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                                    </svg>
+                                </button>
+                                <Show
+                                    when=move || is_active()
+                                    fallback=move |cx| {
+                                        let resume = resume.clone();
+                                        view! { cx,
+                                            <button on:click=move |_| resume()
+                                                class="h-full p-2">
+                                                <svg class="w-8 aspect-square mx-auto" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                                    <path d="M8 17.1783V6.82167C8 6.03258 8.87115 5.55437 9.53688 5.97801L17.6742 11.1563C18.2917 11.5493 18.2917 12.4507 17.6742 12.8437L9.53688 18.022C8.87115 18.4456 8 17.9674 8 17.1783Z" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                                                </svg>
+                                            </button>
+                                        }
+                                    } >
+                                    {
+                                        let pause = pause.clone();
+                                        view! {cx,
+                                            <button on:click=move |_| pause()
+                                                class="h-full p-2">
+                                                <svg class="w-8 aspect-square mx-auto" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                                    <rect x="6" y="6" width="4" height="12" rx="1" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                                                    <rect x="14" y="6" width="4" height="12" rx="1" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                                                </svg>
+                                            </button>
+                                        }
+                                    }
+                                </Show>
+                                <button on:click=move |_| {
+                                        let state = state();
+                                        let mut clock = clock.get();
+
+                                        if clock.time < state.time_steps {
+                                            clock.time += 1;
+                                        } else {
+                                            clock.time = 0;
+                                            clock.gen += 1;
+                                        }
+                                        set_clock(clock);
+                                    }
+                                    class="h-full p-2">
+                                    <svg class="w-8 aspect-square mx-auto" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                        <path d="M9.5 5L15.7929 11.2929C16.1834 11.6834 16.1834 12.3166 15.7929 12.7071L9.5 19" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                                    </svg>
+                                </button>
+                                </div>
                             </div>
-                            <div></div>
                         </div>
                     </div>
 
