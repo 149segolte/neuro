@@ -659,6 +659,11 @@ body {
   width: 100%;
 }
 
+.w-min {
+  width: -moz-min-content;
+  width: min-content;
+}
+
 .w-screen {
   width: 100vw;
 }
@@ -815,6 +820,10 @@ body {
   transition-property: all;
   transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
   transition-duration: 150ms;
+}
+
+.grid-max {
+  grid-template-columns: min-content 1fr;
 }
 
 .ticks {

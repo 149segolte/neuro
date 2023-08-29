@@ -8,6 +8,10 @@
   }
 }
 
+.grid-max {
+  grid-template-columns: min-content 1fr;
+}
+
 .ticks {
   writing-mode: vertical-lr;
 }

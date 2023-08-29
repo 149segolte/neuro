@@ -631,13 +631,13 @@ impl Neuron {
 }
 
 #[derive(Debug, Clone)]
-struct World {
+struct Generation {
     state: Render,
     time: usize,
     population: HashMap<Coord, Neuron>,
 }
 
-impl Default for World {
+impl Default for Generation {
     fn default() -> Self {
         Self {
             state: Render::default(),
@@ -647,7 +647,7 @@ impl Default for World {
     }
 }
 
-impl World {
+impl Generation {
     fn new(state: &Render) -> Self {
         let mut rng = rand::thread_rng();
         let size_dist = Uniform::from(0..state.world_size);
@@ -738,6 +738,62 @@ impl World {
     }
 }
 
+#[derive(Debug, Clone)]
+struct World {
+    state: Render,
+    size: usize,
+    generations: Vec<Generation>,
+    history: Vec<Vec<Vec<Coord>>>,
+}
+
+impl World {
+    fn new(state: &Render) -> Self {
+        Self {
+            state: state.clone(),
+            size: 0,
+            generations: vec![],
+            history: vec![],
+        }
+    }
+
+    fn step(&mut self) {
+        if self.size < self.state.gen_count {
+            let mut generation;
+            let mut history = vec![];
+            if self.size == 0 {
+                generation = Generation::new(&self.state);
+                history.push(generation.get_map());
+                for _ in 0..self.state.time_steps {
+                    generation.step();
+                    history.push(generation.get_map());
+                }
+            } else {
+                /* let genes = self.generations.last().unwrap().get_genomes();
+                generation = Generation::from_genes(&self.state, genes); */
+                generation = Generation::new(&self.state);
+                history.push(generation.get_map());
+                for _ in 0..self.state.time_steps {
+                    generation.step();
+                    history.push(generation.get_map());
+                }
+            }
+            self.size += 1;
+            self.generations.push(generation);
+            self.history.push(history);
+        } else {
+            unreachable!();
+        }
+    }
+
+    fn get_gen(&self, gen: usize) -> Option<&Generation> {
+        self.generations.get(gen)
+    }
+
+    fn get_history(&self, gen: usize) -> Option<&Vec<Vec<Coord>>> {
+        self.history.get(gen)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Render {
     world_size: u16,
@@ -763,7 +819,7 @@ impl Default for Render {
     }
 }
 
-fn display_world(state: &Render, map: Vec<Coord>, canvas: NodeRef<leptos::html::Canvas>) {
+fn display_world(world_size: u16, map: Vec<Coord>, canvas: NodeRef<leptos::html::Canvas>) {
     debug_warn!("display_world");
     let canvas = canvas.get().unwrap();
     let ctx = canvas
@@ -775,12 +831,12 @@ fn display_world(state: &Render, map: Vec<Coord>, canvas: NodeRef<leptos::html::
     ctx.clear_rect(0.0, 0.0, canvas.width() as f64, canvas.height() as f64);
 
     let pixel = move |x: u16, y: u16| {
-        let y = state.world_size - y - 1;
+        let y = world_size - y - 1;
         ctx.fill_rect(
-            x as f64 * canvas.width() as f64 / state.world_size as f64,
-            y as f64 * canvas.height() as f64 / state.world_size as f64,
-            canvas.width() as f64 / state.world_size as f64,
-            canvas.height() as f64 / state.world_size as f64,
+            x as f64 * canvas.width() as f64 / world_size as f64,
+            y as f64 * canvas.height() as f64 / world_size as f64,
+            canvas.width() as f64 / world_size as f64,
+            canvas.height() as f64 / world_size as f64,
         );
     };
 
@@ -847,8 +903,7 @@ fn main() {
         const CANVAS_SIZE: usize = 720;
         let (clock, set_clock) = create_signal(cx, Clock::default());
         let (interval, set_interval) = create_signal(cx, 500);
-        let (world, set_world) = create_signal(cx, World::default());
-        let (history, set_history) = create_signal(cx, Vec::<Vec<Coord>>::new());
+        let (world, set_world) = create_signal(cx, World::new(&Render::default()));
         let (state, set_state) = create_signal(cx, Render::default());
 
         let canvas_ref = create_node_ref::<leptos::html::Canvas>(cx);
@@ -867,7 +922,11 @@ fn main() {
                     clock.time += 1;
                 } else {
                     clock.time = 0;
-                    clock.gen += 1;
+                    if clock.gen < state.gen_count - 1 {
+                        clock.gen += 1;
+                    } else {
+                        clock.gen = 0;
+                    }
                 }
                 set_clock(clock);
             },
@@ -885,15 +944,26 @@ fn main() {
                 debug_warn!("animation");
                 debug_warn!("clock: {:?}", clock.clone());
 
-                if clock.time >= history.with(|hist| hist.len()) {
-                    return;
+                let mut gen_count = world.with(|world| world.size);
+
+                while gen_count <= clock.gen {
+                    set_world.update(|world| world.step());
+                    gen_count = world.with(|world| world.size);
                 }
 
-                display_world(
-                    &state(),
-                    history.with(|hist| hist[clock.time].clone()),
-                    canvas_ref.clone(),
-                );
+                if clock.gen < gen_count {
+                    let map = world.with(|world| {
+                        world
+                            .get_history(clock.gen)
+                            .unwrap()
+                            .get(clock.time)
+                            .unwrap()
+                            .clone()
+                    });
+                    display_world(state().world_size, map, canvas_ref.clone());
+                } else {
+                    unreachable!();
+                }
             },
             false,
         );
@@ -903,7 +973,6 @@ fn main() {
         let compute = |state: Render,
                        animation: Animation,
                        set_clock: WriteSignal<Clock>,
-                       set_history: WriteSignal<Vec<Vec<Coord>>>,
                        world: ReadSignal<World>,
                        set_world: WriteSignal<World>,
                        canvas_ref: NodeRef<leptos::html::Canvas>| {
@@ -913,12 +982,9 @@ fn main() {
                 (animation.pause)();
             }
 
-            set_clock(Clock::default());
-            set_history(vec![]);
-            clear_canvas(canvas_ref);
-
             set_world.set(World::new(&state));
-            set_history.update(|hist| hist.push(world.with_untracked(|w| w.get_map())));
+            set_clock(Clock::default());
+            clear_canvas(canvas_ref);
 
             debug_warn!("done");
         };
@@ -933,8 +999,8 @@ fn main() {
                 <p class="text-2xl font-sans">"This is a generational, artificial neural network experiment."</p>
                 <div class="container grid grid-cols-1 lg:grid-cols-2 gap-8 lg:my-auto">
                     <div class="h-auto pt-8 lg:pt-0 flex flex-col gap-4 justify-center items-center">
-                        <div class="w-full flex items-center">
-                            <label for="size" class="text-2xl whitespace-nowrap">"World Size : "</label>
+                        <div class="w-full grid gap-2 grid-max">
+                            <label for="size" class="w-min text-2xl whitespace-nowrap">"World Size : "</label>
 
                             <div class="w-full ml-2 flex flex-col justify-between">
                                 <input id="size" type="range" min="32" max="256" step="32" list="ticks_world"
@@ -955,10 +1021,8 @@ fn main() {
                                     <option value="256" label="256"></option>
                                 </datalist>
                             </div>
-                        </div>
 
-                        <div class="w-full flex items-center">
-                            <label for="population" class="text-2xl whitespace-nowrap">"Population : "</label>
+                            <label for="population" class="w-min text-2xl whitespace-nowrap">"Population : "</label>
 
                             <div class="w-full ml-2 flex flex-col justify-between">
                                 <input id="population" type="range" min="0.1" max="0.9" step="0.1" list="ticks_pop"
@@ -980,10 +1044,8 @@ fn main() {
                                     <option value="0.9" label="90%"></option>
                                 </datalist>
                             </div>
-                        </div>
 
-                        <div class="w-full flex items-center">
-                            <label for="generation" class="text-2xl whitespace-nowrap">"Generations : "</label>
+                            <label for="generation" class="w-min text-2xl whitespace-nowrap">"Generations : "</label>
 
                             <div class="w-full ml-2 flex flex-col justify-between">
                                 <input id="generation" type="range" min="128" max="1024" step="128" list="ticks_gen"
@@ -1004,10 +1066,8 @@ fn main() {
                                     <option value="1024" label="1024"></option>
                                 </datalist>
                             </div>
-                        </div>
 
-                        <div class="w-full flex items-center">
-                            <label for="time" class="text-2xl whitespace-nowrap">"Time steps : "</label>
+                            <label for="time" class="w-min text-2xl whitespace-nowrap">"Time steps : "</label>
 
                             <div class="w-full ml-2 flex flex-col justify-between">
                                 <input id="time" type="range" min="64" max="512" step="64" list="ticks_time"
@@ -1034,13 +1094,9 @@ fn main() {
                             <button on:click= move |_| {
                                     let compute = compute.clone();
                                     let animation = Animation::new(pause_1.clone(), resume_1.clone(), is_active.clone());
-                                    compute(state.get(), animation, set_clock, set_history, world, set_world, canvas_ref.clone());
+                                    compute(state.get(), animation, set_clock, world, set_world, canvas_ref.clone());
 
-                                    for i in 0..state().time_steps {
-                                        debug_warn!("step {}", i);
-                                        set_world.update(|w| w.step());
-                                        set_history.update(|h| h.push(world.with(|w| w.get_map())));
-                                    }
+                                    resume_1();
                                 }
                                 class="bg-green-400 w-fit mt-2 py-2 px-4 text-lg rounded-full disabled:bg-gray-500 disabled:text-white disabled:opacity-80 hover:bg-green-300 transition-all">
                                 "Compute"
@@ -1048,7 +1104,15 @@ fn main() {
                             <button on:click= move |_| {
                                     let compute = compute.clone();
                                     let animation = Animation::new(pause_2.clone(), resume_2.clone(), is_active.clone());
-                                    compute(state.get(), animation, set_clock, set_history, world, set_world, canvas_ref.clone());
+                                    compute(state.get(), animation, set_clock, world, set_world, canvas_ref.clone());
+
+                                    let mut count = world.with(|world| world.size);
+                                    while count < state.with(|state| state.gen_count) {
+                                        set_world.update(|world| world.step());
+                                        count = world.with(|world| world.size);
+                                    }
+
+                                    resume_2();
                                 }
                                 class="bg-green-400 w-fit mt-2 py-2 px-4 text-lg rounded-full disabled:bg-gray-500 disabled:text-white disabled:opacity-80 hover:bg-green-300 transition-all">
                                 "Generate All"
@@ -1058,7 +1122,7 @@ fn main() {
                         <div class="flex flex-col gap-0 bg-white rounded-lg border justify-center items-center">
                             <div class="grid grid-cols-2 gap-0 border-b">
                                 <span class="pt-2 px-2 text-2xl">Generation: </span>
-                                <input type="number" min="0" prop:max=move || state.with(|state| state.gen_count) class="text-lg text-center"
+                                <input type="number" min="0" prop:max=move || state.with(|state| state.gen_count - 1) class="text-lg text-center"
                                     on:input=move |ev| {
                                         let value = event_target_value(&ev).parse();
                                         if let Ok(value) = value {
